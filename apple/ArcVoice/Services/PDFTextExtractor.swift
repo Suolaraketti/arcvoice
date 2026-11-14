@@ -14,7 +14,7 @@ enum PDFImportError: LocalizedError {
         case .locked:
             return "That PDF is password protected or DRM locked, so its text can't be read."
         case .noText:
-            return "That PDF has no readable text. It is probably scanned page images, which this version can't read yet."
+            return "That PDF has no readable text, even after scanning its pages for words."
         }
     }
 }
@@ -48,6 +48,8 @@ enum PDFTextExtractor {
             }
         }
 
+        // A chapter's decorative first letter is often a picture, not text.
+        pages = BookFile.restoringDropCaps(pages)
         let prose = TextCleaner.prose(fromPages: pages)
         let sentences = prose.sentences
         let characters = sentences.reduce(0) { $0 + $1.count }

@@ -8,7 +8,7 @@ import UIKit
 ///     Library/
 ///       library.json            list of books
 ///       <book id>/
-///         book.pdf or book.epub the original file
+///         book.<format>  the original file (book.epub, book.pdf, book.docx, ...)
 ///         sentences.json        extracted text, one string per sentence
 ///         position.json         where she stopped
 @MainActor
@@ -81,7 +81,9 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Import
 
-    /// Copies a PDF or EPUB into the library and extracts its text.
+    /// Copies a book into the library and extracts its text. Any format
+    /// `BookFile` reads: EPUB, PDF (scanned ones too), Word, Kindle, web
+    /// pages, text and more.
     /// Importing a file that is already in the library returns the existing book.
     func importBook(from source: URL) async throws -> Book {
         let id = UUID()
@@ -97,16 +99,27 @@ final class LibraryStore: ObservableObject {
             throw EPUBImportError.unpacked
         }
 
-        // The contents decide the format, not the name: a zip is an EPUB.
-        let isEPUB = EPUBTextExtractor.looksLikeEPUB(source)
-        let bookURL = bookFolder.appendingPathComponent(isEPUB ? "book.epub" : "book.pdf")
-
+        // Copy first, through a file coordinator: a book in iCloud Drive may
+        // only be a placeholder on this phone, and coordinated reading makes
+        // iOS download it. Then the contents decide the format, not the name.
+        let incoming = bookFolder.appendingPathComponent("incoming")
+        let format: BookFile.Format
         do {
             try FileManager.default.createDirectory(at: bookFolder, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: source, to: bookURL)
+            try await Task.detached(priority: .userInitiated) {
+                try BookFile.copy(source, to: incoming)
+            }.value
+            format = try BookFile.format(of: incoming, extensionHint: source.pathExtension)
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)
-            throw isEPUB ? EPUBImportError.unreadable as Error : PDFImportError.unreadable
+            throw error
+        }
+        let bookURL = bookFolder.appendingPathComponent("book." + format.fileExtension)
+        do {
+            try FileManager.default.moveItem(at: incoming, to: bookURL)
+        } catch {
+            try? FileManager.default.removeItem(at: bookFolder)
+            throw BookFile.Problem.unreadable
         }
 
         // A file handed over with "Open in" is a copy in our Inbox. Clear it out.
@@ -117,9 +130,7 @@ final class LibraryStore: ObservableObject {
         let extracted: ExtractedBook
         do {
             extracted = try await Task.detached(priority: .userInitiated) {
-                isEPUB
-                    ? try EPUBTextExtractor.extract(from: bookURL)
-                    : try PDFTextExtractor.extract(from: bookURL)
+                try BookFile.extract(format, from: bookURL)
             }.value
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)

@@ -38,6 +38,31 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - org.idpf.epub-container
+          - CFBundleTypeName: Book or Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.openxmlformats.wordprocessingml.document
+              - org.oasis-open.opendocument.text
+              - public.rtf
+              - public.html
+              - com.apple.webarchive
+              - public.plain-text
+              - net.daringfireball.markdown
+              - public.image
+              - com.kaczmarowski.arcvoice.kindle
+              - com.kaczmarowski.arcvoice.fictionbook
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.kaczmarowski.arcvoice.kindle
+            UTTypeDescription: Kindle Book
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [mobi, azw, azw3, prc]
+          - UTTypeIdentifier: com.kaczmarowski.arcvoice.fictionbook
+            UTTypeDescription: FictionBook
+            UTTypeConformsTo: [public.xml]
+            UTTypeTagSpecification:
+              public.filename-extension: [fb2]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kaczmarowski.arcvoice
@@ -84,6 +109,31 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - org.idpf.epub-container
+          - CFBundleTypeName: Book or Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.openxmlformats.wordprocessingml.document
+              - org.oasis-open.opendocument.text
+              - public.rtf
+              - public.html
+              - com.apple.webarchive
+              - public.plain-text
+              - net.daringfireball.markdown
+              - public.image
+              - com.kaczmarowski.arcvoice.kindle
+              - com.kaczmarowski.arcvoice.fictionbook
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.kaczmarowski.arcvoice.kindle
+            UTTypeDescription: Kindle Book
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [mobi, azw, azw3, prc]
+          - UTTypeIdentifier: com.kaczmarowski.arcvoice.fictionbook
+            UTTypeDescription: FictionBook
+            UTTypeConformsTo: [public.xml]
+            UTTypeTagSpecification:
+              public.filename-extension: [fb2]
     entitlements:
       path: ArcVoiceMac/ArcVoiceMac.entitlements
       properties:

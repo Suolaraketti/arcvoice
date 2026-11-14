@@ -35,7 +35,8 @@ struct LibraryView: View {
         }
         .fileImporter(
             isPresented: $showingImporter,
-            allowedContentTypes: [.pdf, .epub],
+            // Any file: what it is is decided from its contents.
+            allowedContentTypes: [.item],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -46,9 +47,9 @@ struct LibraryView: View {
                 model.importError = error.localizedDescription
             }
         }
-        // Dragging a PDF or EPUB onto the window adds it. This is the natural way on a Mac.
+        // Dragging a book onto the window adds it. This is the natural way on a Mac.
         .dropDestination(for: URL.self) { urls, _ in
-            let books = urls.filter { ["pdf", "epub"].contains($0.pathExtension.lowercased()) }
+            let books = urls.filter(\.isFileURL)
             guard !books.isEmpty else { return false }
             Task {
                 for url in books { await model.importBook(from: url) }

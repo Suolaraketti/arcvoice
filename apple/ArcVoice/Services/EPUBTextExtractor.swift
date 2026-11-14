@@ -34,14 +34,6 @@ enum EPUBImportError: LocalizedError {
 /// The rules mirror `desktop/crates/core/src/epub.rs`. Keep the two in step.
 enum EPUBTextExtractor {
 
-    /// True when the file starts like a zip archive, which is what an EPUB is.
-    static func looksLikeEPUB(_ url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: 4)) ?? Data()
-        return head == Data([0x50, 0x4B, 0x03, 0x04])
-    }
-
     static func extract(from url: URL) throws -> ExtractedBook {
         let data: Data
         do {
@@ -512,6 +504,9 @@ struct ZipReader {
         }
         self.entries = entries
     }
+
+    /// Every file name in the archive.
+    var names: [String] { Array(entries.keys) }
 
     func contains(_ name: String) -> Bool {
         entries[name] != nil
