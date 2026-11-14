@@ -1,7 +1,7 @@
 # ArcVoice
 
-Reads PDFs and EPUBs out loud with the Kokoro voice, running entirely on
-your own device. No account, no cloud, no per-character fees. Built for listening to
+Reads PDFs and EPUBs out loud with expressive narrator voices, running
+entirely on your own device. No account, no cloud, no per-character fees. Built for listening to
 advance reader copies, which is why it works so hard at skipping the page
 headers, page numbers and watermark lines that ARCs are full of.
 
@@ -12,8 +12,9 @@ headers, page numbers and watermark lines that ARCs are full of.
 | Windows | `desktop/` | Rust, egui, and the shared voice engine |
 
 The voice engine is one piece of Rust code (`desktop/crates/core`) used by
-every app: it prepares text for speech, works out pronunciations, runs Kokoro
-on ONNX Runtime and paces the reading. The iPhone and Mac apps call it through
+every app: it prepares text for speech, works out pronunciations, runs the
+voices (Phonon, and Kokoro as the optional "classic" voices) and paces the
+reading. The iPhone and Mac apps call it through
 a small C interface (`desktop/crates/ffi`), so a fix to how a word is said
 reaches every device at once.
 
@@ -27,14 +28,16 @@ reaches every device at once.
 - Starts speaking as soon as the first sentence is rendered and keeps a few
   sentences rendered ahead, so there are no gaps.
 - Remembers the exact sentence for every book.
-- Speed from 0.8x to 2x and 28 English voices.
+- Speed from 0.8x to 2x. 13 narrator voices (US and UK, female and male),
+  plus 28 optional classic voices.
 - iPhone: reads with the screen locked, lock screen and AirPods controls,
   and Shortcuts actions you can put on the Action Button.
 - Mac: media keys, space bar to play and pause, drag a book onto the window.
 - Windows: space bar and arrow keys, drag a book onto the window.
 
-The voice model downloads once on first launch (about 350 MB). After that the
-app needs no network.
+The voices download once on first launch (about 70 MB). The classic voices
+are a separate, optional download (about 350 MB). After that the app needs
+no network.
 
 ## Build the iPhone and Mac apps
 
@@ -94,7 +97,7 @@ library, so build with:
 
 ```sh
 export MACOSX_DEPLOYMENT_TARGET=14.0
-export RUSTFLAGS="-C link-arg=$(clang --print-runtime-dir)/libclang_rt.osx.a"
+export RUSTFLAGS="-C link-arg=$(clang --print-runtime-dir)/libclang_rt.osx.a -C link-arg=-framework -C link-arg=Accelerate"
 cargo test --release -p arcvoice-core
 ```
 
@@ -122,6 +125,9 @@ do not read that folder yet; that is the next piece of work.
 - An EPUB that has been unpacked into a folder (as Apple Books does on a Mac)
   can't be added; export or download it as a single `.epub` file.
 - English only for now.
+- Phonon voices sometimes guess rare or invented names differently from
+  how a reader would ("de Bourgh", fantasy names). The classic voices use
+  the pronunciation chain above and are steadier on those.
 - Invented names are pronounced by a neural model's best guess. It is
   usually what a reader would say, but an unusual name can come out wrong.
 - British voices use American pronunciations for words outside the main
@@ -146,17 +152,45 @@ Everything here is in `desktop/crates/core` and shared by every app.
    among them), then possessives, plurals, prefixes and compounds built from
    known words ("BookFunnel", "ebook", "Netherfield"), and finally a small
    neural model (`g2p_nn.rs`) for invented names.
-3. **The voice.** Kokoro v1.0 on ONNX Runtime, on the CPU (iOS does not allow
-   the GPU in the background, and the Neural Engine cannot run this model).
+3. **The voice** (`phonon.rs`, `narrator.rs`). The default voices are
+   Phonon 31m (Gradium, built on Kyutai's Pocket TTS and Mimi codec), run
+   with the `ptts` crate on the CPU with 8-bit weights. It reads plain text,
+   so step 2 is only used by the classic voices, and it is far more
+   expressive: its narrators move their pitch 20 to 60% more than Kokoro,
+   which is what listeners hear as inflection. Each sentence gets a fixed
+   random seed from its text, so going back replays the same take. The
+   classic voices are Kokoro v1.0 on ONNX Runtime, also on the CPU (iOS does
+   not allow the GPU in the background, and the Neural Engine cannot run
+   Kokoro).
 4. **Pacing** (`pacing.rs`). Each sentence's own silence is trimmed to a fixed
    margin and a deliberate pause added: about 0.4 s between sentences, 0.75 s
    at the end of a paragraph, longer after a heading, all shorter at higher
-   speeds. Speed changes the voice's own pace rather than stretching audio.
+   speeds. Each sentence is levelled toward the same loudness so voices and
+   takes match. Speed changes the voice's own pace rather than stretching
+   audio, up to 1.3x for Phonon; beyond that the rest is made up with a
+   pitch-preserving time-stretch (`stretch.rs`, WSOLA).
 
 Measured on 20 sentences of typical fiction with times, numbers, names and
 dialogue, transcribed back by Whisper: the previous engine had a 36% word
 error rate and went silent on 4 sentences; this one has 7% and none silent,
-most of the remainder being how Whisper writes numbers.
+most of the remainder being how Whisper writes numbers. Phonon Harper,
+through the same pipeline, scores 5.6%.
+
+Voices were chosen on a fiction passage with dialogue, scored for
+naturalness (UTMOS, out of 5), pitch movement and word error rate:
+
+| Voice | Naturalness | Pitch movement (sd) | Word errors |
+| --- | --- | --- | --- |
+| Kokoro Heart (classic) | 4.52 | 2.85 st | 2.2% |
+| Phonon Harper (default) | 4.46 | 3.48 st | 4.7% |
+| Phonon Maeve | 4.45 | 4.29 st | 3.2% |
+| Phonon Hugh | 4.39 | 4.51 st | 4.3% |
+| Phonon Spencer | 4.32 | 3.78 st | 1.8% |
+
+At higher speeds (naturalness / word errors): Harper 4.24 / 4.0% at 1.5x and
+3.58 / 4.3% at 2x; Kokoro 4.30 / 5.0% and 4.09 / 10.1%. Phonon renders about
+25 to 35 times faster than real time on two cores of an M3 and is ready in
+under half a second.
 
 ## How the cleanup works
 

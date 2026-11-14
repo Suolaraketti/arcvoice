@@ -6,6 +6,9 @@ launch.
 
 | Component | Used by | License |
 | --- | --- | --- |
+| [Phonon 31m](https://huggingface.co/gradium/phonon-31m-en) voice model | all | Apache-2.0 |
+| [phonon-voices](https://huggingface.co/gradium/phonon-voices) (voice files) | all | Apache-2.0 |
+| [ptts](https://crates.io/crates/ptts) (Rust runtime for Phonon) and [xn](https://crates.io/crates/xn) | all | MIT or Apache-2.0 |
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) voice model and voices | all | Apache-2.0 |
 | [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) (ONNX export of the model, hosted model files) | all | MIT |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | all | MIT |
@@ -18,6 +21,9 @@ launch.
 | [rodio](https://github.com/RustAudio/rodio) | Windows | MIT or Apache-2.0 |
 | [rfd](https://github.com/PolyMeilex/rfd) | Windows | MIT |
 | [ureq](https://github.com/algesten/ureq) | Windows | MIT or Apache-2.0 |
+
+Phonon is built on Kyutai's Pocket TTS and its Mimi audio codec; credit to
+Kyutai Labs for that work.
 
 Data files in `desktop/crates/core/assets/`:
 
