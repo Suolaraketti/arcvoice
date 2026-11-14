@@ -136,6 +136,50 @@ fn rules() -> &'static [Rule] {
                     })
                     .into_owned()
             }),
+            // Small capitals from typesetting: "R. BENNET was" or "TOOKS COURT"
+            // is read as words, not spelled letter by letter. Short
+            // capitals ("FBI", "NASA", "OK") are left alone as initials.
+            // A run of capital words ("TOOKS COURT, CHANCERY LANE") is read as
+            // words throughout, apart from short acronyms within it.
+            rule(r"\b[A-Z][A-Z'\u{2019}]+(?:[ ,]+[A-Z][A-Z'\u{2019}]+)+\b", |regex, text| {
+                regex
+                    .replace_all(text, |caps: &Captures| {
+                        let run = &caps[0];
+                        if !run.split([' ', ',']).any(|word| word.chars().count() >= 4) {
+                            return run.to_string();
+                        }
+                        let word_regex = Regex::new(r"[A-Z][A-Z'\u{2019}]+").expect("valid");
+                        word_regex
+                            .replace_all(run, |word: &Captures| {
+                                let word = &word[0];
+                                let short = word.chars().count() <= 3 && !SMALL_WORDS.contains(&word);
+                                if short || KEEP_CAPITALS.contains(&word) {
+                                    word.to_string()
+                                } else {
+                                    capitalize(&word.to_lowercase())
+                                }
+                            })
+                            .into_owned()
+                    })
+                    .into_owned()
+            }),
+            rule(r"\b[A-Z][A-Z'\u{2019}]{4,}\b", |regex, text| {
+                regex
+                    .replace_all(text, |caps: &Captures| {
+                        let word = &caps[0];
+                        if KEEP_CAPITALS.contains(&word) || roman_value(word).is_some() {
+                            return word.to_string();
+                        }
+                        let mut letters = word.chars();
+                        let first = letters.next().expect("matched a letter");
+                        first.to_string() + &letters.as_str().to_lowercase()
+                    })
+                    .into_owned()
+            }),
+            // Text-speak in dialogue and messages is said as letters.
+            rule(r"\b(omg|idk|tbh|btw|smh|ngl|imo|imho|fyi|brb|ttyl|irl|wtf|lmk)\b", |regex, text| {
+                regex.replace_all(text, |caps: &Captures| caps[0].to_uppercase()).into_owned()
+            }),
             // A heading that is only a numeral: "IV" or "III." -> "Four".
             rule(r"^\s*([IVXLCivxlc]+)\.?\s*$", |regex, text| {
                 regex
@@ -149,6 +193,12 @@ fn rules() -> &'static [Rule] {
         ]
     })
 }
+
+/// Short words that, inside a run of capitals, are words and not initials.
+const SMALL_WORDS: [&str; 14] = ["THE", "AND", "OF", "A", "TO", "IN", "ON", "AT", "BY", "FOR", "HIS", "HER", "MY", "ITS"];
+
+/// Long all-capital words that really are acronyms, kept as capitals.
+const KEEP_CAPITALS: [&str; 8] = ["UNESCO", "NASDAQ", "UNICEF", "NAACP", "ASAP'S", "HTTPS", "IKEA'S", "NATO'S"];
 
 /// Capitalized words that come before a numeral without being a ruler's name.
 const NOT_NAMES: [&str; 12] = ["The", "A", "An", "In", "Of", "And", "But", "Or", "On", "At", "To", "Is"];
@@ -359,6 +409,18 @@ mod tests {
         assert_eq!(prepare("Malcolm X spoke."), "Malcolm X spoke.");
         assert_eq!(prepare("I said MIX it."), "I said MIX it.");
         assert_eq!(prepare("The XX chromosome."), "The XX chromosome.");
+    }
+
+    #[test]
+    fn small_capitals_and_text_speak() {
+        assert_eq!(prepare("R. BENNET was among the earliest."), "R. Bennet was among the earliest.");
+        assert_eq!(prepare("TOOKS COURT, CHANCERY LANE, LONDON."), "Tooks Court, Chancery Lane, London.");
+        assert_eq!(prepare("The FBI and NASA agreed it was OK."), "The FBI and NASA agreed it was OK.");
+        assert_eq!(prepare("\u{201C}STOP!\u{201D} he yelled."), "\u{201C}STOP!\u{201D} he yelled.");
+        assert_eq!(prepare("Text me ASAP lol, omg."), "Text me ASAP lol, OMG.");
+        assert_eq!(prepare("UNESCO met."), "UNESCO met.");
+        assert_eq!(prepare("THE LONG ROAD HOME"), "The Long Road Home");
+        assert_eq!(prepare("Two FBI AGENTS came."), "Two FBI Agents came.");
     }
 
     #[test]

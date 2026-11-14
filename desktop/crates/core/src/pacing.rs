@@ -65,13 +65,58 @@ pub fn trim_silence(samples: &[f32], sample_rate: u32) -> &[f32] {
     &samples[start..end]
 }
 
-/// A rendered sentence ready to queue: trimmed, with its pause after it, and
-/// with a few milliseconds of fade at each edge so no click is heard.
+/// The speaking level every sentence is drawn toward: the RMS of its voiced
+/// part, in dBFS. About where Kokoro and most Phonon voices sit already.
+const TARGET_LEVEL_DB: f32 = -21.0;
+/// How much of the gap to the target is closed. Not all of it: a whispered
+/// line should stay quieter than a shouted one, just not by a startling jump.
+const LEVEL_CORRECTION: f32 = 0.6;
+/// The most any sentence is turned up or down.
+const MAX_LEVEL_CHANGE_DB: f32 = 4.0;
+
+/// The RMS level of the voiced 20 ms frames of `samples`, in dBFS.
+fn speech_level_db(samples: &[f32], sample_rate: u32) -> Option<f32> {
+    let frame = (0.02 * sample_rate as f32) as usize;
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for chunk in samples.chunks(frame.max(1)) {
+        let energy = chunk.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / chunk.len() as f64;
+        // Frames above -40 dBFS are speech; below is breath and silence.
+        if energy > 1e-4 {
+            sum += energy * chunk.len() as f64;
+            count += chunk.len();
+        }
+    }
+    (count > 0).then(|| (10.0 * (sum / count as f64).log10()) as f32)
+}
+
+/// Draws a sentence's loudness toward a common level, so sentences and
+/// voices sit at an even volume over hours of listening, with a soft limit
+/// so turning one up can never clip.
+pub fn even_out_loudness(samples: &mut [f32], sample_rate: u32) {
+    let Some(level) = speech_level_db(samples, sample_rate) else { return };
+    let change = ((TARGET_LEVEL_DB - level) * LEVEL_CORRECTION).clamp(-MAX_LEVEL_CHANGE_DB, MAX_LEVEL_CHANGE_DB);
+    let gain = 10f32.powf(change / 20.0);
+    for sample in samples.iter_mut() {
+        let value = *sample * gain;
+        // Above 0.9 bend smoothly toward 1.0 instead of clipping.
+        *sample = if value.abs() <= 0.9 {
+            value
+        } else {
+            value.signum() * (0.9 + 0.1 * ((value.abs() - 0.9) / 0.1).tanh())
+        };
+    }
+}
+
+/// A rendered sentence ready to queue: trimmed, evened out in loudness, with
+/// its pause after it, and a few milliseconds of fade at each edge so no
+/// click is heard.
 pub fn finish_sentence(samples: &[f32], sample_rate: u32, sentence: &str, after: Break, speed: f32) -> Vec<f32> {
     let spoken = trim_silence(samples, sample_rate);
     let pause = (pause_after(sentence, after, speed) * sample_rate as f32) as usize;
     let mut out = Vec::with_capacity(spoken.len() + pause);
     out.extend_from_slice(spoken);
+    even_out_loudness(&mut out, sample_rate);
     let fade = ((0.004 * sample_rate as f32) as usize).min(out.len() / 2);
     for index in 0..fade {
         let gain = index as f32 / fade as f32;
@@ -108,6 +153,30 @@ mod tests {
         // 20 ms lead + 100 sound + 60 ms tail at 1 kHz.
         assert_eq!(trimmed.len(), 20 + 100 + 60);
         assert!(trim_silence(&[0.0; 50], rate).is_empty());
+    }
+
+    #[test]
+    fn loudness_moves_toward_the_target_but_not_all_the_way() {
+        let rate = 24_000;
+        let tone = |amplitude: f32| -> Vec<f32> {
+            (0..rate).map(|i| amplitude * (std::f32::consts::TAU * 200.0 * i as f32 / rate as f32).sin()).collect()
+        };
+        let level = |x: &[f32]| speech_level_db(x, rate).unwrap();
+        // A quiet sentence (about -33 dB) comes up, by the capped 4 dB.
+        let mut quiet = tone(0.03);
+        let before = level(&quiet);
+        even_out_loudness(&mut quiet, rate);
+        assert!((level(&quiet) - before - 4.0).abs() < 0.2, "{} -> {}", before, level(&quiet));
+        // One near the target barely moves.
+        let mut normal = tone(0.125);
+        let before = level(&normal);
+        even_out_loudness(&mut normal, rate);
+        assert!((level(&normal) - before).abs() < 1.0);
+        // A loud one comes down and never clips.
+        let mut loud = tone(0.99);
+        even_out_loudness(&mut loud, rate);
+        assert!(loud.iter().all(|s| s.abs() <= 1.0));
+        assert!(level(&loud) < -3.0);
     }
 
     #[test]
