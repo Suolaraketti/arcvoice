@@ -1,0 +1,94 @@
+name: ArcVoice
+options:
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+packages:
+  SpeechSwift:
+    url: https://github.com/soniqo/speech-swift
+    from: 0.0.29
+
+targets:
+  ArcVoice:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources:
+      - path: ArcVoice
+        excludes:
+          - Info.plist
+    info:
+      path: ArcVoice/Info.plist
+      properties:
+        CFBundleDisplayName: ArcVoice
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        LSSupportsOpeningDocumentsInPlace: false
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.arcvoice
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: false
+    dependencies:
+      - package: SpeechSwift
+        product: KokoroTTS
+
+  ArcVoiceMac:
+    type: application
+    platform: macOS
+    scheme: {}
+    sources:
+      - path: ArcVoice
+        excludes:
+          - Info.plist
+    info:
+      path: ArcVoiceMac/Info.plist
+      properties:
+        CFBundleDisplayName: ArcVoice
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.books
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
+    entitlements:
+      path: ArcVoiceMac/ArcVoiceMac.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+    settings:
+      base:
+        PRODUCT_NAME: ArcVoice
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.arcvoice
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: false
+        ENABLE_HARDENED_RUNTIME: true
+    dependencies:
+      - package: SpeechSwift
+        product: KokoroTTS

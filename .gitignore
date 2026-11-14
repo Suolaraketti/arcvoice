@@ -1,0 +1,10 @@
+.DS_Store
+target/
+*.xcodeproj
+apple/ArcVoice/Info.plist
+apple/ArcVoiceMac/
+apple/.spm/
+xcuserdata/
+DerivedData/
+.build/
+speak.wav

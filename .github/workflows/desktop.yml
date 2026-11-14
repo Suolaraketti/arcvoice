@@ -1,0 +1,48 @@
+name: Windows app
+
+on:
+  push:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build for Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Run the tests
+        run: cargo test --release -p arcvoice-core
+
+      - name: Build the app
+        run: cargo build --release -p arcvoice
+
+      - name: Collect the app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/arcvoice.exe dist/ArcVoice.exe
+          Get-ChildItem target/release -Filter *.dll | Copy-Item -Destination dist
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArcVoice-windows
+          path: desktop/dist

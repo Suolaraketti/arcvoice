@@ -1,0 +1,26 @@
+[package]
+name = "arcvoice-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PDF text extraction, cleanup and on-device Kokoro speech for ArcVoice"
+
+[features]
+default = ["ort-bundled"]
+# Downloads prebuilt ONNX Runtime at build time and links it into the binary.
+ort-bundled = ["ort/download-binaries", "ort/tls-native", "ort/copy-dylibs"]
+# Loads an ONNX Runtime shared library at run time (set ORT_DYLIB_PATH).
+ort-dynamic = ["ort/load-dynamic"]
+
+[dependencies]
+anyhow = "1"
+dirs = "6"
+misaki-rs = { version = "0.9", default-features = false }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std"] }
+pdf-extract = "0.12"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

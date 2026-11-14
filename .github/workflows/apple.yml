@@ -1,0 +1,72 @@
+name: Apple apps
+
+on:
+  push:
+    paths:
+      - "apple/**"
+      - ".github/workflows/apple.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build iPhone and Mac apps
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apple
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: apple/.spm
+          key: spm-${{ runner.os }}-${{ hashFiles('apple/project.yml') }}
+
+      - name: Build for iPhone
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ArcVoice.xcodeproj \
+            -scheme ArcVoice \
+            -destination 'generic/platform=iOS Simulator' \
+            -clonedSourcePackagesDirPath .spm \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee ios-build.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+          grep -q "BUILD SUCCEEDED" ios-build.log
+
+      - name: Build for Mac
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ArcVoice.xcodeproj \
+            -scheme ArcVoiceMac \
+            -destination 'platform=macOS' \
+            -clonedSourcePackagesDirPath .spm \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee mac-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+          grep -q "BUILD SUCCEEDED" mac-build.log
+
+      - name: Keep the build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-build-logs
+          path: apple/*-build.log
+          if-no-files-found: ignore
