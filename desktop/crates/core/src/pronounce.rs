@@ -32,6 +32,15 @@ impl Fallback for WordResolver {
     }
 }
 
+/// Loads the CMU dictionary and the neural model now, so the first unusual
+/// name in a book does not pause the reading while they load.
+pub fn warm_up() {
+    let _ = cmu().len();
+    if let Some(model) = NeuralG2p::shared() {
+        let _ = model.predict("kaelith");
+    }
+}
+
 /// Phonemes for one unknown word.
 pub fn resolve(word: &str) -> String {
     let word = word

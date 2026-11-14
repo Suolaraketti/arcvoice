@@ -89,19 +89,35 @@ actor SpeechEngine {
         voices = (Self.take(arcvoice_engine_voices(opened)) ?? "")
             .split(separator: "\n").map(String.init)
         // The first render is slower than the rest. Take that hit now.
-        _ = try? synthesize("Ready.", voice: Self.defaultVoice, speed: 1, endsParagraph: false)
+        _ = try? synthesize("Ready.", voice: Self.defaultVoice, speed: 1, after: .sentence)
         return voices
     }
 
-    /// Renders one sentence at 24 kHz, ready to play: the speech, then the
-    /// pause that belongs after it.
-    func synthesize(_ text: String, voice: String, speed: Float, endsParagraph: Bool) throws -> [Float] {
+    /// What follows a rendered piece, which sets the pause after it.
+    enum After {
+        case sentence
+        case paragraph
+        /// The first part of a sentence, played early so reading starts sooner.
+        case clause
+
+        var code: UInt32 {
+            switch self {
+            case .sentence: return UInt32(ARCVOICE_AFTER_SENTENCE)
+            case .paragraph: return UInt32(ARCVOICE_AFTER_PARAGRAPH)
+            case .clause: return UInt32(ARCVOICE_AFTER_CLAUSE)
+            }
+        }
+    }
+
+    /// Renders text at 24 kHz, ready to play: the speech, then the pause that
+    /// belongs after it.
+    func synthesize(_ text: String, voice: String, speed: Float, after: After) throws -> [Float] {
         guard let engine else { throw SpeechEngineError.notLoaded }
         let chosen = voices.contains(voice) ? voice : Self.defaultVoice
         var samples: UnsafeMutablePointer<Float>?
         var count = 0
         var error: UnsafeMutablePointer<CChar>?
-        guard arcvoice_engine_render(engine, text, chosen, speed, endsParagraph, &samples, &count, &error),
+        guard arcvoice_engine_render(engine, text, chosen, speed, after.code, &samples, &count, &error),
               let samples
         else {
             throw SpeechEngineError.engine(Self.take(error) ?? "The voice could not read that sentence.")

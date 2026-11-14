@@ -30,13 +30,23 @@ void arcvoice_engine_close(ArcVoiceEngine *engine);
 /// The English voice names, one per line, sorted.
 char *arcvoice_engine_voices(ArcVoiceEngine *engine);
 
-/// Renders one sentence ready to play: the speech with its silent ends
-/// trimmed, then the pause that should follow it (longer at a paragraph end
-/// or after a heading). `speed` is 0.5 to 2.0 and changes the voice's own
-/// pace, so it keeps its natural sound. Returns false and sets `*error` on
-/// failure.
+/// What follows a rendered piece of text, which sets the pause after it.
+enum {
+    ARCVOICE_AFTER_SENTENCE = 0,
+    /// The end of a paragraph: a longer pause.
+    ARCVOICE_AFTER_PARAGRAPH = 1,
+    /// The first part of a sentence, spoken early so playback starts sooner:
+    /// only a breath.
+    ARCVOICE_AFTER_CLAUSE = 2,
+};
+
+/// Renders text ready to play: the speech with its silent ends trimmed, then
+/// the pause that should follow it (`after`, one of ARCVOICE_AFTER_*; a
+/// heading always gets a long pause). `speed` is 0.5 to 2.0 and changes the
+/// voice's own pace, so it keeps its natural sound. Returns false and sets
+/// `*error` on failure.
 bool arcvoice_engine_render(ArcVoiceEngine *engine, const char *text, const char *voice, float speed,
-                            bool ends_paragraph, float **samples, size_t *count, char **error);
+                            uint32_t after, float **samples, size_t *count, char **error);
 
 /// The phonemes a sentence is spoken with, for diagnosing a pronunciation.
 char *arcvoice_engine_phonemize(ArcVoiceEngine *engine, const char *text, bool british);

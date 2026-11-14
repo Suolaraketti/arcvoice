@@ -67,6 +67,8 @@ pub unsafe extern "C" fn arcvoice_engine_open(
         let voices = unsafe { borrowed(voices_path) }.ok_or("the voices path is missing")?;
         let options = LoadOptions { threads: (threads > 0).then_some(threads as usize), ..LoadOptions::default() };
         let kokoro = Kokoro::load_with(Path::new(model), Path::new(voices), &options).map_err(|e| format!("{e:#}"))?;
+        // The pronunciation dictionary and name model load in the background.
+        std::thread::spawn(arcvoice_core::pronounce::warm_up);
         Ok(Box::into_raw(Box::new(ArcVoiceEngine { kokoro })))
     })
 }
@@ -97,7 +99,7 @@ pub unsafe extern "C" fn arcvoice_engine_render(
     text: *const c_char,
     voice: *const c_char,
     speed: f32,
-    ends_paragraph: bool,
+    after: u32,
     samples: *mut *mut f32,
     count: *mut usize,
     error: *mut *mut c_char,
@@ -110,7 +112,11 @@ pub unsafe extern "C" fn arcvoice_engine_render(
             return Err("no place to put the audio".to_string());
         }
         let speech = engine.kokoro.synthesize(text, voice, speed).map_err(|e| format!("{e:#}"))?;
-        let after = if ends_paragraph { Break::Paragraph } else { Break::Sentence };
+        let after = match after {
+            1 => Break::Paragraph,
+            2 => Break::Clause,
+            _ => Break::Sentence,
+        };
         let finished = pacing::finish_sentence(&speech, SAMPLE_RATE, text, after, speed).into_boxed_slice();
         unsafe {
             *count = finished.len();

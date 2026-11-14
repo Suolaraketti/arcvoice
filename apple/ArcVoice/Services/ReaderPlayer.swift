@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import MediaPlayer
+import os
 
 /// Plays a book one sentence at a time.
 ///
@@ -67,8 +68,21 @@ final class ReaderPlayer: ObservableObject {
 
     // MARK: - Queue bookkeeping
 
-    /// How many sentences to keep rendered beyond the one being spoken.
-    private let lookahead = 3
+    /// Seconds of rendered audio to keep queued ahead of the listener, like a
+    /// video player's buffer. Rendering runs about three times faster than
+    /// speech, so the buffer fills quickly, keeps filling while paused, and is
+    /// topped up as it plays.
+    private let bufferAheadSeconds = 30.0
+    /// Seconds of audio queued on the player and not yet heard.
+    private var queuedSeconds = 0.0
+    /// Below this much buffered audio, sentences are rendered a clause at a
+    /// time, so each piece is ready before the one before it finishes
+    /// playing. Above it, whole sentences, for the most natural delivery.
+    private let lowBufferSeconds = 8.0
+    /// When the listener last asked for sound from an empty buffer (play,
+    /// skip, voice or speed change), to measure how quickly it came.
+    private var waitingSince: ContinuousClock.Instant?
+    private let log = Logger(subsystem: "com.kaczmarowski.arcvoice", category: "player")
 
     /// Bumped on every seek or stop. Anything still in flight from an older
     /// generation (a render, a buffer callback) sees the mismatch and is ignored.
@@ -106,6 +120,13 @@ final class ReaderPlayer: ObservableObject {
         self.state = .paused
         self.lastError = nil
         updateNowPlaying()
+        // Start buffering now, so pressing play is instant.
+        startPump()
+    }
+
+    /// The voice finished loading: start buffering the open book.
+    func voiceDidLoad() {
+        startPump()
     }
 
     func close() {
@@ -125,8 +146,11 @@ final class ReaderPlayer: ObservableObject {
         if state == .playing { return }
         if state == .finished {
             generation += 1
+            pumpTask?.cancel()
+            pumpTask = nil
             currentIndex = 0
             nextToSynthesize = 0
+            queuedSeconds = 0
         }
         do {
             #if os(iOS)
@@ -146,6 +170,9 @@ final class ReaderPlayer: ObservableObject {
         node.play()
         state = .playing
         lastError = nil
+        isBuffering = queuedSeconds == 0
+        if queuedSeconds == 0 { waitingSince = .now }
+        log.info("play: \(self.queuedSeconds, format: .fixed(precision: 1))s already buffered")
         updateNowPlaying()
         startPump()
     }
@@ -178,15 +205,17 @@ final class ReaderPlayer: ObservableObject {
 
         currentIndex = target
         nextToSynthesize = target
-        isBuffering = false
+        queuedSeconds = 0
+        isBuffering = wasPlaying
         if state == .finished { state = .paused }
         reportPosition()
         updateNowPlaying()
 
         if wasPlaying {
             node.play()
-            startPump()
+            waitingSince = .now
         }
+        startPump()
     }
 
     func skip(by delta: Int) {
@@ -196,48 +225,124 @@ final class ReaderPlayer: ObservableObject {
     // MARK: - Rendering pump
 
     private func startPump() {
-        guard pumpTask == nil, state == .playing else { return }
+        guard pumpTask == nil, book != nil, state == .playing || state == .paused else { return }
         let pumpGeneration = generation
         pumpTask = Task { [weak self] in
             await self?.pump(generation: pumpGeneration)
         }
     }
 
-    /// Renders sentences until the look-ahead window is full, then exits.
-    /// It is started again each time a sentence finishes playing.
+    /// Renders until the buffer holds `bufferAheadSeconds` of audio, then
+    /// exits. It is started again each time a buffer finishes playing.
+    ///
+    /// Like a video player, it adapts to how much is buffered. Starting from
+    /// an empty buffer (a new book, a skip, a voice or speed change) or
+    /// running low, sentences are rendered in clause-sized pieces with a short
+    /// first piece, so speech starts within a second and each piece arrives
+    /// before the last one finishes. With a few seconds in hand it renders
+    /// whole sentences again.
     private func pump(generation pumpGeneration: Int) async {
         defer {
             if pumpGeneration == generation { pumpTask = nil }
         }
-        while !Task.isCancelled, pumpGeneration == generation, state == .playing {
+        while !Task.isCancelled, pumpGeneration == generation, state == .playing || state == .paused {
             guard nextToSynthesize < sentences.count,
-                  nextToSynthesize - currentIndex <= lookahead else { return }
+                  queuedSeconds < bufferAheadSeconds || nextToSynthesize <= currentIndex + 1 else { return }
 
             let index = nextToSynthesize
             let text = sentences[index]
             let voiceName = voice
             let speed = rate
-            let endsParagraph = paragraphEnds.contains(index)
-            if index == currentIndex { isBuffering = true }
-
-            let samples: [Float]
-            do {
-                samples = try await engine.synthesize(
-                    text, voice: voiceName, speed: speed, endsParagraph: endsParagraph)
-            } catch {
-                guard pumpGeneration == generation else { return }
-                isBuffering = false
-                lastError = "The voice hit a problem: \(error.localizedDescription)"
-                pauseAfterFailure()
-                return
+            let after: SpeechEngine.After = paragraphEnds.contains(index) ? .paragraph : .sentence
+            var pieces: [(text: String, after: SpeechEngine.After)] = [(text, after)]
+            if queuedSeconds < lowBufferSeconds {
+                let parts = Self.clausePieces(text, shortFirst: queuedSeconds == 0)
+                pieces = parts.enumerated().map { number, part in
+                    (part, number == parts.count - 1 ? after : .clause)
+                }
             }
+            if index == currentIndex, state == .playing { isBuffering = true }
 
-            // A seek or a pause may have happened while that was rendering.
-            guard pumpGeneration == generation, !Task.isCancelled else { return }
-            if index == currentIndex { isBuffering = false }
+            for (number, piece) in pieces.enumerated() {
+                let samples: [Float]
+                let started = ContinuousClock.now
+                do {
+                    samples = try await engine.synthesize(piece.text, voice: voiceName, speed: speed, after: piece.after)
+                } catch SpeechEngineError.notLoaded {
+                    // Buffering starts again once the voice has loaded.
+                    return
+                } catch {
+                    guard pumpGeneration == generation else { return }
+                    isBuffering = false
+                    lastError = "The voice hit a problem: \(error.localizedDescription)"
+                    pauseAfterFailure()
+                    return
+                }
+
+                // A seek, or a voice or speed change, may have happened meanwhile.
+                guard pumpGeneration == generation, !Task.isCancelled else { return }
+                let took = started.duration(to: .now)
+                let audio = Double(samples.count) / SpeechEngine.sampleRate
+                log.info(
+                    "rendered \(index)\(pieces.count > 1 ? " piece \(number + 1)/\(pieces.count)" : ""): \(audio, format: .fixed(precision: 2))s of audio in \(took.description), buffer \(self.queuedSeconds + audio, format: .fixed(precision: 1))s"
+                )
+                if let waited = waitingSince, state == .playing {
+                    log.info("sound started \(waited.duration(to: .now).description) after asking")
+                    waitingSince = nil
+                }
+                if index == currentIndex { isBuffering = false }
+                schedule(
+                    samples, index: index, endsSentence: number == pieces.count - 1, generation: pumpGeneration)
+            }
             nextToSynthesize = index + 1
-            schedule(samples, index: index, generation: pumpGeneration)
         }
+    }
+
+    /// A sentence cut into pieces for rendering while the buffer is low.
+    /// Cuts prefer clause breaks (comma, semicolon, colon, dash) and fall
+    /// back to the space between two words. With `shortFirst` (nothing
+    /// buffered at all) the pieces grow: about 20 to 40 characters, then up
+    /// to 65, 110 and 140, so the first sound comes fast and each piece lasts
+    /// long enough to cover rendering the next (measured: a piece renders in
+    /// well under half the time it takes to speak, plus a fixed moment).
+    /// Otherwise pieces are up to 140 characters.
+    static func clausePieces(_ text: String, shortFirst: Bool) -> [String] {
+        let sizes = shortFirst ? [(20, 40), (30, 65), (40, 110)] : []
+        var pieces: [String] = []
+        var rest = Array(text.trimmingCharacters(in: .whitespaces))
+        while !rest.isEmpty {
+            let (minimum, limit) = pieces.count < sizes.count ? sizes[pieces.count] : (40, 140)
+            // Not worth cutting: what is left is barely over the limit.
+            if rest.count <= limit + 20 {
+                pieces.append(String(rest))
+                break
+            }
+            let upper = min(limit, rest.count - 12)
+            var cut: Int?
+            if minimum < upper {
+                for index in minimum..<upper where isClauseBreak(rest, at: index) {
+                    cut = index + 1
+                }
+                if cut == nil {
+                    let target = limit * 4 / 5
+                    cut = (minimum..<upper).filter { rest[$0] == " " }
+                        .min(by: { abs($0 - target) < abs($1 - target) })
+                }
+            }
+            guard let cut else {
+                pieces.append(String(rest))
+                break
+            }
+            pieces.append(String(rest[..<cut]).trimmingCharacters(in: .whitespaces))
+            rest = Array(String(rest[cut...]).trimmingCharacters(in: .whitespaces))
+        }
+        return pieces.filter { !$0.isEmpty }
+    }
+
+    private static func isClauseBreak(_ characters: [Character], at index: Int) -> Bool {
+        let mark = characters[index]
+        if mark == "\u{2014}" || mark == "\u{2013}" { return true }
+        return [",", ";", ":"].contains(mark) && index + 1 < characters.count && characters[index + 1] == " "
     }
 
     private func pauseAfterFailure() {
@@ -247,18 +352,21 @@ final class ReaderPlayer: ObservableObject {
         updateNowPlaying()
     }
 
-    /// Queues a rendered sentence. The engine has already trimmed it and
-    /// added the pause that follows it.
-    private func schedule(_ samples: [Float], index: Int, generation scheduledGeneration: Int) {
+    /// Queues rendered audio for sentence `index`: all of it, or its opening
+    /// clause when `endsSentence` is false. The engine has already trimmed it
+    /// and added the pause that follows it.
+    private func schedule(_ samples: [Float], index: Int, endsSentence: Bool, generation scheduledGeneration: Int) {
         let totalFrames = max(1, samples.count)
+        let seconds = Double(totalFrames) / SpeechEngine.sampleRate
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
               let channel = buffer.floatChannelData?[0] else {
             // Could not build a buffer. Treat the sentence as already spoken so
             // the book does not stall on it.
-            bufferFinished(index: index, generation: scheduledGeneration)
+            if endsSentence { bufferFinished(index: index, seconds: 0, endsSentence: true, generation: scheduledGeneration) }
             return
         }
+        queuedSeconds += seconds
         buffer.frameLength = AVAudioFrameCount(totalFrames)
         channel[0] = 0
         samples.withUnsafeBufferPointer { source in
@@ -269,14 +377,20 @@ final class ReaderPlayer: ObservableObject {
 
         node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.bufferFinished(index: index, generation: scheduledGeneration)
+                self?.bufferFinished(
+                    index: index, seconds: seconds, endsSentence: endsSentence, generation: scheduledGeneration)
             }
         }
     }
 
-    private func bufferFinished(index: Int, generation finishedGeneration: Int) {
+    private func bufferFinished(index: Int, seconds: Double, endsSentence: Bool, generation finishedGeneration: Int) {
         // Buffers dropped by a seek also call back. Ignore those.
         guard finishedGeneration == generation else { return }
+        queuedSeconds = max(0, queuedSeconds - seconds)
+        guard endsSentence else {
+            startPump()
+            return
+        }
 
         if index + 1 >= sentences.count {
             finishBook()
@@ -294,6 +408,7 @@ final class ReaderPlayer: ObservableObject {
         pumpTask = nil
         node.stop()
         audioEngine.pause()
+        queuedSeconds = 0
         currentIndex = max(0, sentences.count - 1)
         state = .finished
         isBuffering = false
@@ -307,6 +422,7 @@ final class ReaderPlayer: ObservableObject {
         pumpTask = nil
         node.stop()
         if audioEngine.isRunning { audioEngine.pause() }
+        queuedSeconds = 0
         isBuffering = false
     }
 

@@ -15,12 +15,18 @@ use crate::text;
 pub enum Break {
     Sentence,
     Paragraph,
+    /// The first part of a sentence spoken ahead of the rest so playback
+    /// starts sooner. Only a breath follows it.
+    Clause,
 }
 
 /// Seconds of silence to put after `sentence` at `speed`.
 pub fn pause_after(sentence: &str, after: Break, speed: f32) -> f32 {
     let trimmed = sentence.trim_end_matches(['"', '\'', '\u{201D}', '\u{2019}', ')', ' ']);
-    let seconds = if text::is_heading(sentence) {
+    let seconds = if after == Break::Clause {
+        // A comma's breath, or almost none when cut between words.
+        if trimmed.ends_with([',', ';', ':', '\u{2014}', '\u{2013}']) { 0.2 } else { 0.05 }
+    } else if text::is_heading(sentence) {
         1.1
     } else if after == Break::Paragraph {
         0.75
@@ -88,6 +94,8 @@ mod tests {
         assert_eq!(pause_after("It was over.", Break::Sentence, 1.0), 0.42);
         assert_eq!(pause_after("\u{201C}I don\u{2019}t\u{2014}\u{201D}", Break::Sentence, 1.0), 0.55);
         assert_eq!(pause_after("It was over.", Break::Sentence, 2.0), 0.21);
+        assert_eq!(pause_after("When it was over,", Break::Clause, 1.0), 0.2);
+        assert_eq!(pause_after("When it was", Break::Clause, 1.0), 0.05);
     }
 
     #[test]

@@ -104,6 +104,7 @@ final class AppModel: ObservableObject {
                 selectedVoice = SpeechEngine.defaultVoice
             }
             voiceState = .ready
+            player.voiceDidLoad()
         } catch {
             voiceState = .failed(error.localizedDescription)
         }
