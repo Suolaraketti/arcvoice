@@ -23,6 +23,8 @@ struct ExtractedBook: Sendable {
     var title: String?
     var pageCount: Int
     var sentences: [String]
+    /// Indices of the sentences that end a paragraph.
+    var paragraphEnds: [Int]
     var bookKey: String
 }
 
@@ -46,7 +48,8 @@ enum PDFTextExtractor {
             }
         }
 
-        let sentences = TextCleaner.sentences(fromPages: pages)
+        let prose = TextCleaner.prose(fromPages: pages)
+        let sentences = prose.sentences
         let characters = sentences.reduce(0) { $0 + $1.count }
         guard sentences.count >= 3, characters >= 200 else {
             throw PDFImportError.noText
@@ -56,6 +59,7 @@ enum PDFTextExtractor {
             title: cleanTitle(document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String),
             pageCount: document.pageCount,
             sentences: sentences,
+            paragraphEnds: prose.paragraphEnds,
             bookKey: try fileKey(for: url)
         )
     }

@@ -2,18 +2,19 @@
 //!
 //!   cargo run --release --example speak -- <models dir> text "Hello there."
 //!   cargo run --release --example speak -- <models dir> pdf book.pdf
+//!   cargo run --release --example speak -- <models dir> epub book.epub
 //!
-//! `text` writes speak.wav and prints how fast it rendered. `pdf` prints the
-//! first cleaned sentences of a PDF, which is the quickest way to see how
+//! `text` writes speak.wav and prints how fast it rendered. `pdf` and `epub`
+//! print the first cleaned sentences of a book, which is the quickest way to see how
 //! well the cleanup handles a particular book.
 
-use arcvoice_core::{models, pdf, Kokoro, SAMPLE_RATE};
+use arcvoice_core::{epub, models, pdf, Kokoro, SAMPLE_RATE};
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("usage: speak <models dir> text \"words to say\" [voice]\n       speak <models dir> pdf <file.pdf>");
+        eprintln!("usage: speak <models dir> text \"words to say\" [voice]\n       speak <models dir> pdf <file.pdf>\n       speak <models dir> epub <file.epub>");
         std::process::exit(2);
     }
     let models_dir = std::path::Path::new(&args[1]);
@@ -23,6 +24,14 @@ fn main() -> anyhow::Result<()> {
             let bytes = std::fs::read(&args[3])?;
             let book = pdf::extract(&bytes)?;
             println!("title: {:?}, pages: {}, sentences: {}", book.title, book.page_count, book.sentences.len());
+            for (index, sentence) in book.sentences.iter().take(40).enumerate() {
+                println!("{index:>3}  {sentence}");
+            }
+        }
+        "epub" => {
+            let bytes = std::fs::read(&args[3])?;
+            let book = epub::extract(&bytes)?;
+            println!("title: {:?}, pages (est.): {}, sentences: {}", book.title, book.page_count, book.sentences.len());
             for (index, sentence) in book.sentences.iter().take(40).enumerate() {
                 println!("{index:>3}  {sentence}");
             }

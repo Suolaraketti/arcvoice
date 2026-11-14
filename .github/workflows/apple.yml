@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - "apple/**"
+      - "desktop/crates/core/**"
+      - "desktop/crates/ffi/**"
+      - "desktop/Cargo.lock"
       - ".github/workflows/apple.yml"
   workflow_dispatch:
 
@@ -28,14 +31,21 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Install Rust for iOS
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      # The voice engine is the shared Rust code in desktop/, built as a
+      # static library for the iPhone, the Simulator and the Mac.
+      - name: Build the voice engine
+        run: ./build-core.sh
+
       - name: Generate the Xcode project
         run: xcodegen
-
-      - name: Cache Swift packages
-        uses: actions/cache@v4
-        with:
-          path: apple/.spm
-          key: spm-${{ runner.os }}-${{ hashFiles('apple/project.yml') }}
 
       - name: Build for iPhone
         run: |
@@ -44,8 +54,6 @@ jobs:
             -project ArcVoice.xcodeproj \
             -scheme ArcVoice \
             -destination 'generic/platform=iOS Simulator' \
-            -clonedSourcePackagesDirPath .spm \
-            -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
             | tee ios-build.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)|\*\* " || true
           grep -q "BUILD SUCCEEDED" ios-build.log
@@ -57,8 +65,6 @@ jobs:
             -project ArcVoice.xcodeproj \
             -scheme ArcVoiceMac \
             -destination 'platform=macOS' \
-            -clonedSourcePackagesDirPath .spm \
-            -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
             | tee mac-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* " || true
           grep -q "BUILD SUCCEEDED" mac-build.log

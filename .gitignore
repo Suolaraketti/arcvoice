@@ -8,3 +8,7 @@ xcuserdata/
 DerivedData/
 .build/
 speak.wav
+apple/.dd/
+apple/*-build.log
+apple/Frameworks/
+apple/build/

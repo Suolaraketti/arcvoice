@@ -1,0 +1,15 @@
+[package]
+name = "arcvoice-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C interface to the ArcVoice engine, for the iPhone and Mac apps"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# The prebuilt ONNX Runtime for iOS ships with CoreML support, so the feature
+# is on to match it, even though Kokoro runs on the CPU.
+arcvoice-core = { path = "../core", features = ["coreml"] }

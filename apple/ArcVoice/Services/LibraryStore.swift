@@ -8,7 +8,7 @@ import UIKit
 ///     Library/
 ///       library.json            list of books
 ///       <book id>/
-///         book.pdf              the original file
+///         book.pdf or book.epub the original file
 ///         sentences.json        extracted text, one string per sentence
 ///         position.json         where she stopped
 @MainActor
@@ -46,6 +46,10 @@ final class LibraryStore: ObservableObject {
         folder(for: id).appendingPathComponent("sentences.json")
     }
 
+    private func paragraphsURL(for id: UUID) -> URL {
+        folder(for: id).appendingPathComponent("paragraphs.json")
+    }
+
     private func positionURL(for id: UUID) -> URL {
         folder(for: id).appendingPathComponent("position.json")
     }
@@ -77,24 +81,32 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Import
 
-    /// Copies a PDF into the library and extracts its text.
+    /// Copies a PDF or EPUB into the library and extracts its text.
     /// Importing a file that is already in the library returns the existing book.
-    func importPDF(from source: URL) async throws -> Book {
+    func importBook(from source: URL) async throws -> Book {
         let id = UUID()
         let bookFolder = folder(for: id)
-        let pdfURL = bookFolder.appendingPathComponent("book.pdf")
 
         // Files picked from iCloud Drive or another app are security scoped.
         // The copy has to happen while access is held.
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
+        // Apple Books on a Mac keeps EPUBs as unpacked folders.
+        if (try? source.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            throw EPUBImportError.unpacked
+        }
+
+        // The contents decide the format, not the name: a zip is an EPUB.
+        let isEPUB = EPUBTextExtractor.looksLikeEPUB(source)
+        let bookURL = bookFolder.appendingPathComponent(isEPUB ? "book.epub" : "book.pdf")
+
         do {
             try FileManager.default.createDirectory(at: bookFolder, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: source, to: pdfURL)
+            try FileManager.default.copyItem(at: source, to: bookURL)
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)
-            throw PDFImportError.unreadable
+            throw isEPUB ? EPUBImportError.unreadable as Error : PDFImportError.unreadable
         }
 
         // A file handed over with "Open in" is a copy in our Inbox. Clear it out.
@@ -105,7 +117,9 @@ final class LibraryStore: ObservableObject {
         let extracted: ExtractedBook
         do {
             extracted = try await Task.detached(priority: .userInitiated) {
-                try PDFTextExtractor.extract(from: pdfURL)
+                isEPUB
+                    ? try EPUBTextExtractor.extract(from: bookURL)
+                    : try PDFTextExtractor.extract(from: bookURL)
             }.value
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)
@@ -120,6 +134,8 @@ final class LibraryStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(extracted.sentences)
             try data.write(to: sentencesURL(for: id), options: .atomic)
+            let paragraphs = try JSONEncoder().encode(extracted.paragraphEnds)
+            try paragraphs.write(to: paragraphsURL(for: id), options: .atomic)
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)
             throw error
@@ -147,6 +163,15 @@ final class LibraryStore: ObservableObject {
     func sentences(for book: Book) throws -> [String] {
         let data = try Data(contentsOf: sentencesURL(for: book.id))
         return try JSONDecoder().decode([String].self, from: data)
+    }
+
+    /// Indices of the sentences that end a paragraph. Books added before
+    /// paragraphs were tracked have none, and are paced sentence by sentence.
+    func paragraphEnds(for book: Book) -> Set<Int> {
+        guard let data = try? Data(contentsOf: paragraphsURL(for: book.id)),
+              let ends = try? JSONDecoder().decode([Int].self, from: data)
+        else { return [] }
+        return Set(ends)
     }
 
     func position(for book: Book) -> ReadingPosition? {

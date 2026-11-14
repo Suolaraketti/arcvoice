@@ -1,7 +1,7 @@
 //! Drives the playback engine with no window: import a PDF, play, seek,
 //! pause, and print what happens. Used to check the engine end to end.
 //!
-//!   cargo run --release --example engine_smoke -- <data dir> <file.pdf>
+//!   cargo run --release --example engine_smoke -- <data dir> <file.pdf or file.epub>
 //!
 //! The Kokoro model must already be in `<data dir>/models`.
 
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut library = Library::open(PathBuf::from(&args[1]))?;
-    let book = library.import_pdf(&PathBuf::from(&args[2]))?;
+    let book = library.import_book(&PathBuf::from(&args[2]))?;
     let sentences = library.sentences(&book)?;
     let start = library.resume_index(&book, &sentences);
     println!("book \"{}\": {} sentences, resuming at {start}", book.title, sentences.len());

@@ -11,10 +11,11 @@
 //!
 //! The window sends `Command`s in and reads a `Snapshot` out.
 
-use arcvoice_core::{library, models, Book, Kokoro, Library, SAMPLE_RATE};
+use arcvoice_core::pacing::{self, Break};
+use arcvoice_core::{models, Book, Kokoro, Library, SAMPLE_RATE};
 use rodio::buffer::SamplesBuffer;
 use rodio::{OutputStream, OutputStreamBuilder, Sink};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -24,8 +25,6 @@ use std::time::Duration;
 /// How many sentences to keep rendered beyond the one being spoken.
 const LOOKAHEAD: usize = 3;
 /// A short breath between sentences, in seconds. Headings get a longer one.
-const SENTENCE_GAP: f32 = 0.12;
-const HEADING_GAP: f32 = 0.45;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiceStatus {
@@ -209,6 +208,8 @@ struct Controller {
 
     book: Option<Book>,
     sentences: Arc<Vec<String>>,
+    /// Sentences after which a paragraph ends, for a longer pause.
+    paragraph_ends: HashSet<usize>,
     /// The sentence being spoken, or the next to speak while paused.
     position: usize,
     playing: bool,
@@ -256,6 +257,7 @@ impl Controller {
             speed,
             book: None,
             sentences: Arc::new(Vec::new()),
+            paragraph_ends: HashSet::new(),
             position: 0,
             playing: false,
             finished: false,
@@ -326,6 +328,7 @@ impl Controller {
         match command {
             Command::Open { book, sentences, start } => {
                 self.flush();
+                self.paragraph_ends = self.library.lock().unwrap().paragraph_ends(&book).into_iter().collect();
                 self.playing = false;
                 self.finished = false;
                 self.error = None;
@@ -486,9 +489,9 @@ impl Controller {
         }
         self.pending = None;
         match result {
-            Ok(mut samples) => {
-                let gap = if library::is_heading(&self.sentences[index]) { HEADING_GAP } else { SENTENCE_GAP };
-                samples.resize(samples.len() + (gap * SAMPLE_RATE as f32) as usize, 0.0);
+            Ok(samples) => {
+                let after = if self.paragraph_ends.contains(&index) { Break::Paragraph } else { Break::Sentence };
+                let samples = pacing::finish_sentence(&samples, SAMPLE_RATE, &self.sentences[index], after, self.speed);
                 if let Some(sink) = &self.sink {
                     sink.append(SamplesBuffer::new(1, SAMPLE_RATE, samples));
                     self.queued.push_back(index);

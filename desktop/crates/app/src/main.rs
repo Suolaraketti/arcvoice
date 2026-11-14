@@ -1,7 +1,7 @@
 //! ArcVoice for the desktop: a small window around the engine.
 //!
 //! Books on the left, the passage being read in the middle, transport
-//! controls along the bottom. Drop a PDF anywhere on the window to add it.
+//! controls along the bottom. Drop a PDF or EPUB anywhere on the window to add it.
 
 // Without this, Windows opens a console window behind the app.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -83,7 +83,7 @@ impl App {
         }
     }
 
-    /// Reads a PDF on a background thread so the window stays responsive.
+    /// Reads a book on a background thread so the window stays responsive.
     fn start_import(&mut self, path: PathBuf, context: &egui::Context) {
         self.imports_running += 1;
         let sender = self.import_sender.clone();
@@ -126,8 +126,8 @@ impl App {
         }
     }
 
-    fn pick_pdfs(&mut self, context: &egui::Context) {
-        let picked = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files();
+    fn pick_books(&mut self, context: &egui::Context) {
+        let picked = rfd::FileDialog::new().add_filter("Books", &["pdf", "epub"]).pick_files();
         for path in picked.unwrap_or_default() {
             self.start_import(path, context);
         }
@@ -145,14 +145,14 @@ impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_imports();
 
-        // PDFs dropped onto the window.
+        // Books dropped onto the window.
         let dropped: Vec<PathBuf> =
             context.input(|input| input.raw.dropped_files.iter().filter_map(|file| file.path.clone()).collect());
         for path in dropped {
-            if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf")) {
+            if path.extension().is_some_and(|extension| ["pdf", "epub"].iter().any(|kind| extension.eq_ignore_ascii_case(kind))) {
                 self.start_import(path, context);
             } else {
-                self.message = Some("Only PDF files can be added.".to_string());
+                self.message = Some("Only PDF and EPUB files can be added.".to_string());
             }
         }
 
@@ -191,15 +191,15 @@ impl App {
             ui.horizontal(|ui| {
                 ui.heading("Library");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Add PDF").clicked() {
-                        self.pick_pdfs(context);
+                    if ui.button("Add book").clicked() {
+                        self.pick_books(context);
                     }
                 });
             });
             if self.imports_running > 0 {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Reading the PDF");
+                    ui.label("Reading the book");
                 });
             }
             ui.separator();
@@ -207,7 +207,7 @@ impl App {
             let books = self.library.lock().unwrap().sorted_books();
             if books.is_empty() {
                 ui.add_space(12.0);
-                ui.label("No books yet. Add a PDF, or drop one onto this window.");
+                ui.label("No books yet. Add a PDF or EPUB, or drop one onto this window.");
             }
 
             let mut to_open: Option<Book> = None;
@@ -403,7 +403,7 @@ impl App {
         egui::CentralPanel::default().show(context, |ui| {
             let Some(book) = &snapshot.book else {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Pick a book from the library, or drop a PDF here.");
+                    ui.label("Pick a book from the library, or drop a PDF or EPUB here.");
                 });
                 return;
             };

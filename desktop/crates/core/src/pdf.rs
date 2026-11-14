@@ -10,6 +10,8 @@ pub struct ExtractedPdf {
     pub title: Option<String>,
     pub page_count: usize,
     pub sentences: Vec<String>,
+    /// Indices of the sentences that end a paragraph.
+    pub paragraph_ends: Vec<usize>,
 }
 
 /// Raw text of every page, in order.
@@ -32,12 +34,12 @@ pub fn page_texts(bytes: &[u8]) -> Result<Vec<String>> {
 
 pub fn extract(bytes: &[u8]) -> Result<ExtractedPdf> {
     let pages = page_texts(bytes)?;
-    let sentences = text::sentences_from_pages(&pages);
+    let text::Prose { sentences, paragraph_ends } = text::prose_from_pages(&pages);
     let characters: usize = sentences.iter().map(|sentence| sentence.chars().count()).sum();
     if sentences.len() < 3 || characters < 200 {
         bail!("That PDF has no readable text. It is probably scanned page images, which this version can't read yet.");
     }
-    Ok(ExtractedPdf { title: title(bytes), page_count: pages.len(), sentences })
+    Ok(ExtractedPdf { title: title(bytes), page_count: pages.len(), sentences, paragraph_ends })
 }
 
 /// The title from the PDF's metadata, when it has a real one.

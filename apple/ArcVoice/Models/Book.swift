@@ -1,10 +1,10 @@
 import Foundation
 
-/// One imported PDF in the library.
+/// One imported PDF or EPUB in the library.
 struct Book: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var title: String
-    /// SHA-256 of the original PDF bytes. The same file on another device
+    /// SHA-256 of the original file's bytes. The same file on another device
     /// produces the same key, which is what a future sync matches on.
     var bookKey: String
     var pageCount: Int

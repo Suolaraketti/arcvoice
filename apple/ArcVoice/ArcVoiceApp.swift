@@ -10,9 +10,9 @@ struct ArcVoiceApp: App {
                 .environmentObject(model)
                 .environmentObject(model.library)
                 .environmentObject(model.player)
-                // A PDF sent here from Files, Mail or Safari with "Open in".
+                // A PDF or EPUB sent here from Files, Mail or Safari with "Open in".
                 .onOpenURL { url in
-                    Task { await model.importPDF(from: url) }
+                    Task { await model.importBook(from: url) }
                 }
                 // Start loading the voice right away so it is ready by the
                 // time she has picked a book.

@@ -17,7 +17,7 @@ struct LibraryView: View {
                         Button {
                             showingImporter = true
                         } label: {
-                            Label("Add PDF", systemImage: "plus")
+                            Label("Add book", systemImage: "plus")
                         }
                     }
                 }
@@ -35,23 +35,23 @@ struct LibraryView: View {
         }
         .fileImporter(
             isPresented: $showingImporter,
-            allowedContentTypes: [.pdf],
+            allowedContentTypes: [.pdf, .epub],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
-                Task { await model.importPDF(from: url) }
+                Task { await model.importBook(from: url) }
             case .failure(let error):
                 model.importError = error.localizedDescription
             }
         }
-        // Dragging a PDF onto the window adds it. This is the natural way on a Mac.
+        // Dragging a PDF or EPUB onto the window adds it. This is the natural way on a Mac.
         .dropDestination(for: URL.self) { urls, _ in
-            let pdfs = urls.filter { $0.pathExtension.lowercased() == "pdf" }
-            guard !pdfs.isEmpty else { return false }
+            let books = urls.filter { ["pdf", "epub"].contains($0.pathExtension.lowercased()) }
+            guard !books.isEmpty else { return false }
             Task {
-                for url in pdfs { await model.importPDF(from: url) }
+                for url in books { await model.importBook(from: url) }
             }
             return true
         }
@@ -82,9 +82,9 @@ struct LibraryView: View {
             ContentUnavailableView {
                 Label("No books yet", systemImage: "books.vertical")
             } description: {
-                Text("Add a PDF from Files or iCloud Drive, or share one to ArcVoice from another app.")
+                Text("Add a PDF or EPUB from Files or iCloud Drive, or share one to ArcVoice from another app.")
             } actions: {
-                Button("Add a PDF") { showingImporter = true }
+                Button("Add a book") { showingImporter = true }
                     .buttonStyle(.borderedProminent)
             }
         } else {
@@ -156,7 +156,7 @@ private struct VoiceStatusBanner: View {
                 Text(message)
                     .font(.footnote.weight(.medium))
                 ProgressView(value: min(1, max(0, progress)))
-                Text("The voice downloads once, about 170 MB. After that it works offline.")
+                Text("The voice downloads once, about 350 MB. After that it works offline.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -231,7 +231,7 @@ private struct ImportingOverlay: View {
             Color.black.opacity(0.25).ignoresSafeArea()
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Reading the PDF")
+                Text("Reading the book")
                     .font(.subheadline)
             }
             .padding(24)

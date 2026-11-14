@@ -11,6 +11,8 @@ default = ["ort-bundled"]
 ort-bundled = ["ort/download-binaries", "ort/tls-native", "ort/copy-dylibs"]
 # Loads an ONNX Runtime shared library at run time (set ORT_DYLIB_PATH).
 ort-dynamic = ["ort/load-dynamic"]
+# Lets the voice model run on Apple's Neural Engine through CoreML.
+coreml = ["ort/coreml"]
 
 [dependencies]
 anyhow = "1"

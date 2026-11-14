@@ -1,0 +1,4 @@
+module ArcVoiceCore {
+    header "arcvoice.h"
+    export *
+}

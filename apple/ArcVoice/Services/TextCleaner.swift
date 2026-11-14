@@ -11,17 +11,157 @@ enum TextCleaner {
 
     // MARK: - Entry point
 
+    /// Sentences in reading order, with the ones that end a paragraph marked
+    /// so the reader can pause longer there, the way a narrator does.
+    struct Prose: Sendable, Equatable {
+        var sentences: [String] = []
+        /// Indices into `sentences`, ascending.
+        var paragraphEnds: [Int] = []
+
+        mutating func appendBlock(_ block: [String]) {
+            guard !block.isEmpty else { return }
+            sentences.append(contentsOf: block)
+            paragraphEnds.append(sentences.count - 1)
+        }
+    }
+
     /// - Parameter pages: the raw text of each page, in reading order.
     /// - Returns: sentences in reading order, with page furniture removed.
     static func sentences(fromPages pages: [String]) -> [String] {
+        prose(fromPages: pages).sentences
+    }
+
+    /// Like `sentences(fromPages:)`, keeping paragraph ends.
+    ///
+    /// A PDF does not say where paragraphs end, but typeset prose shows it:
+    /// the last line of a paragraph ends a sentence and stops well short of
+    /// the right margin. Lines are compared with the book's typical full line.
+    static func prose(fromPages pages: [String]) -> Prose {
         let pageLines = pages.map { lines(in: $0) }
         let stripped = removeRepeatedLines(pageLines)
-        let blocks = joinIntoBlocks(stripped)
-        var result: [String] = []
-        for block in blocks {
-            result.append(contentsOf: splitSentences(block))
+        var prose = Prose()
+        for block in joinIntoBlocks(stripped, fullLine: typicalLineLength(stripped)) {
+            prose.appendBlock(splitSentences(block))
         }
-        return result
+        return prose
+    }
+
+    /// The length of a full line of body text: the median of the longer lines.
+    static func typicalLineLength(_ pages: [[String]]) -> Int? {
+        let lengths = pages.joined().map(\.count).filter { $0 >= 25 }.sorted()
+        guard lengths.count >= 10 else { return nil }
+        let median = lengths[lengths.count / 2]
+        return median >= 40 ? median : nil
+    }
+
+    // MARK: - EPUB chapters
+
+    /// One paragraph of an EPUB chapter, as the book's markup laid it out.
+    struct Paragraph: Sendable, Equatable {
+        var text: String
+        /// True when the markup itself says this is a heading (`<h1>` to `<h6>`).
+        var isHeading: Bool
+    }
+
+    /// Paragraphs of each EPUB chapter, in reading order, to sentences.
+    ///
+    /// An EPUB has no pages, so there are no running headers or page numbers
+    /// to find. What it can have is a watermark paragraph stamped into every
+    /// chapter ("This copy is licensed to reader@example.com"). Stamps go at
+    /// the start or end of a chapter, so the rule only looks there: a short
+    /// paragraph among the first or last three of a chapter, whose fingerprint
+    /// sits in that zone in half or more of the chapters (and at least four),
+    /// is dropped. Looking only at the edges keeps short lines of dialogue
+    /// like "No." that recur all through a book. Headings are compared by
+    /// their exact text instead, so "Chapter 1" and "Chapter 2" survive while
+    /// a repeated "ADVANCE READER COPY" banner does not.
+    static func sentences(fromChapters chapters: [[Paragraph]]) -> [String] {
+        prose(fromChapters: chapters).sentences
+    }
+
+    /// Like `sentences(fromChapters:)`, keeping paragraph ends.
+    static func prose(fromChapters chapters: [[Paragraph]]) -> Prose {
+        let cleaned: [[Paragraph]] = chapters.map { paragraphs in
+            paragraphs.compactMap { paragraph in
+                let text = lines(in: paragraph.text).joined(separator: " ")
+                guard hasLettersOrDigits(text), !isContentsEntry(text) else { return nil }
+                return Paragraph(text: text, isHeading: paragraph.isHeading || isHeading(text))
+            }
+        }
+
+        func repeatKey(_ paragraph: Paragraph) -> String {
+            paragraph.isHeading ? "h:" + paragraph.text.lowercased() : "p:" + fingerprint(paragraph.text)
+        }
+        func inStampZone(_ index: Int, _ count: Int) -> Bool {
+            index < 3 || index + 3 >= count
+        }
+
+        let chapterCount = cleaned.count
+        var counts: [String: Int] = [:]
+        if chapterCount >= 4 {
+            for paragraphs in cleaned {
+                var seen = Set<String>()
+                for (index, paragraph) in paragraphs.enumerated()
+                where inStampZone(index, paragraphs.count) && paragraph.text.count <= 100 {
+                    seen.insert(repeatKey(paragraph))
+                }
+                for key in seen { counts[key, default: 0] += 1 }
+            }
+        }
+        let minimum = max(4, Int((Double(chapterCount) * 0.5).rounded(.up)))
+
+        var prose = Prose()
+        for paragraphs in cleaned {
+            for (index, paragraph) in paragraphs.enumerated() {
+                if chapterCount >= 4, inStampZone(index, paragraphs.count), paragraph.text.count <= 100,
+                   (counts[repeatKey(paragraph)] ?? 0) >= minimum {
+                    continue
+                }
+                if paragraph.isHeading {
+                    let letters = paragraph.text.filter { $0.isLetter }
+                    let allCaps = letters.count >= 3 && letters.allSatisfy { $0.isUppercase }
+                    prose.appendBlock([allCaps ? titleCase(paragraph.text) : paragraph.text])
+                } else {
+                    // Each paragraph is its own block, so a paragraph that ends
+                    // without punctuation never runs into the next one.
+                    prose.appendBlock(splitSentences(paragraph.text))
+                }
+            }
+        }
+        return prose
+    }
+
+    /// "CHAPTER ONE" reads more naturally as "Chapter One". Roman numerals
+    /// stay in capitals ("PART III" is "Part III", not "Part Iii") so the
+    /// voice can still read them as numbers.
+    static func titleCase(_ line: String) -> String {
+        var out = ""
+        var word = ""
+        func flush() {
+            if isRomanNumeral(word) {
+                out += word
+            } else if let first = word.first {
+                out += String(first).uppercased() + word.dropFirst().lowercased()
+            }
+            word = ""
+        }
+        for character in line {
+            if character.isLetter || character == "'" || character == "\u{2019}" {
+                word.append(character)
+            } else {
+                flush()
+                out.append(character)
+            }
+        }
+        flush()
+        return out
+    }
+
+    static func isRomanNumeral(_ word: String) -> Bool {
+        word.count <= 8
+            && !word.isEmpty
+            && word.allSatisfy { "IVXLC".contains($0) }
+            && !["I", "LIV", "CIVIC", "CIVIL", "VIC", "LIC"].contains(word)
     }
 
     // MARK: - Lines
@@ -35,6 +175,7 @@ enum TextCleaner {
             ("\u{00A0}", " "),           // non-breaking space
             ("\u{2009}", " "), ("\u{200A}", " "), ("\u{202F}", " "),
             ("\u{200B}", ""),            // zero-width space
+            ("\u{2060}", ""), ("\u{FEFF}", ""), // word joiners
             ("\t", " "),
             ("\u{FB00}", "ff"), ("\u{FB01}", "fi"), ("\u{FB02}", "fl"),
             ("\u{FB03}", "ffi"), ("\u{FB04}", "ffl"),
@@ -190,9 +331,13 @@ enum TextCleaner {
     /// Merges the lines of every page into blocks of running text. A heading
     /// becomes a block of its own; everything between headings is one block,
     /// carried across page breaks so a sentence split by a page turn is whole.
-    static func joinIntoBlocks(_ pages: [[String]]) -> [String] {
+    static func joinIntoBlocks(_ pages: [[String]], fullLine: Int? = nil) -> [String] {
         var blocks: [String] = []
         var current = ""
+        func endsParagraph(_ line: String) -> Bool {
+            guard let fullLine else { return false }
+            return endsLikeSentence(line) && line.count * 100 < fullLine * 78
+        }
 
         func flush() {
             let trimmed = current.trimmingCharacters(in: .whitespaces)
@@ -207,21 +352,22 @@ enum TextCleaner {
                     // "CHAPTER ONE" reads more naturally as "Chapter One".
                     let letters = line.filter { $0.isLetter }
                     let allCaps = !letters.isEmpty && letters.allSatisfy { $0.isUppercase }
-                    blocks.append(allCaps ? line.capitalized : line)
+                    blocks.append(allCaps ? titleCase(line) : line)
                     continue
                 }
                 if current.isEmpty {
                     current = line
-                    continue
-                }
-                // A word broken across lines: "some-" + "thing" -> "something".
-                if let last = current.last, last == "-" || last == "\u{2010}",
-                   let first = line.first, first.isLowercase,
-                   let before = current.dropLast().last, before.isLetter {
+                } else if let last = current.last, last == "-" || last == "\u{2010}",
+                          let first = line.first, first.isLowercase,
+                          let before = current.dropLast().last, before.isLetter {
+                    // A word broken across lines: "some-" + "thing" -> "something".
                     current.removeLast()
                     current += line
                 } else {
                     current += " " + line
+                }
+                if endsParagraph(line) {
+                    flush()
                 }
             }
         }

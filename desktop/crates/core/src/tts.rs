@@ -1,7 +1,9 @@
 //! Kokoro text to speech, running on this machine through ONNX Runtime.
 //!
 //! The pipeline for one sentence:
-//!   text -> phonemes (misaki) -> token ids (Kokoro's vocabulary)
+//!   text -> spoken form (`speech_text`: times, numerals, addresses)
+//!        -> phonemes (misaki, with `pronounce` for words it does not know)
+//!        -> token ids (Kokoro's vocabulary)
 //!        -> the model, with a voice style vector -> 24 kHz audio samples
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -14,13 +16,27 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use crate::fallback::RuleFallback;
+use crate::pronounce::WordResolver;
+use crate::speech_text;
 
 /// Kokoro accepts at most 510 phoneme tokens per call.
 const MAX_TOKENS: usize = 510;
 /// Stay under the limit so a chunk never needs to be cut mid-word.
 const TOKEN_BUDGET: usize = 480;
 const STYLE_WIDTH: usize = 256;
+
+/// How to run the voice model.
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// Threads for one sentence. `None` lets ONNX Runtime choose.
+    pub threads: Option<usize>,
+    /// Hand what CoreML can run to the Neural Engine (Apple only). The GPU
+    /// is left out on purpose: iOS forbids it while the app is in the
+    /// background, which is where an audiobook app spends its life.
+    pub coreml: bool,
+    /// Where CoreML keeps its compiled model between launches.
+    pub coreml_cache: Option<std::path::PathBuf>,
+}
 
 pub struct Kokoro {
     session: Session,
@@ -37,9 +53,29 @@ pub struct Kokoro {
 impl Kokoro {
     /// Loads the model and voices from disk. Takes a second or two.
     pub fn load(model_path: &Path, voices_path: &Path) -> Result<Self> {
+        Self::load_with(model_path, voices_path, &LoadOptions::default())
+    }
+
+    pub fn load_with(model_path: &Path, voices_path: &Path, options: &LoadOptions) -> Result<Self> {
         let environment = ort::init().build().map_err(|error| anyhow!("ONNX Runtime did not start: {error}"))?;
-        let session = Session::builder(&environment)
-            .map_err(|error| anyhow!("{error}"))?
+        let mut builder = Session::builder(&environment).map_err(|error| anyhow!("{error}"))?;
+        if let Some(threads) = options.threads {
+            builder = builder.with_intra_threads(threads).map_err(|error| anyhow!("{error}"))?;
+        }
+        #[cfg(feature = "coreml")]
+        if options.coreml {
+            use ort::ep::coreml::{ComputeUnits, ModelFormat};
+            let mut coreml = ort::ep::CoreML::default()
+                .with_model_format(ModelFormat::MLProgram)
+                .with_compute_units(ComputeUnits::CPUAndNeuralEngine);
+            if let Some(cache) = &options.coreml_cache {
+                coreml = coreml.with_model_cache_dir(cache.display());
+            }
+            builder = builder.with_execution_providers([coreml.build()]).map_err(|error| anyhow!("{error}"))?;
+        }
+        #[cfg(not(feature = "coreml"))]
+        let _ = options.coreml;
+        let session = builder
             .commit_from_file(model_path)
             .map_err(|error| anyhow!("could not load the voice model: {error}"))?;
 
@@ -55,7 +91,7 @@ impl Kokoro {
             _environment: environment,
             vocab,
             voices: load_voices(voices_path)?,
-            american: G2P::with_fallback(Language::EnglishUS, Some(Box::new(RuleFallback))),
+            american: G2P::with_fallback(Language::EnglishUS, Some(Box::new(WordResolver))),
             british: None,
         })
     }
@@ -92,12 +128,27 @@ impl Kokoro {
     pub fn phonemize(&mut self, text: &str, british: bool) -> Result<String> {
         let g2p = if british {
             self.british
-                .get_or_insert_with(|| G2P::with_fallback(Language::EnglishGB, Some(Box::new(RuleFallback))))
+                .get_or_insert_with(|| G2P::with_fallback(Language::EnglishGB, Some(Box::new(WordResolver))))
         } else {
             &self.american
         };
-        let (phonemes, _) = g2p.g2p(text).map_err(|error| anyhow!("could not phonemize: {error}"))?;
-        Ok(phonemes)
+        let text = speech_text::prepare(text);
+        match g2p.g2p(&text) {
+            Ok((phonemes, _)) => Ok(phonemes),
+            // Something in the sentence defeated the phonemizer. Say every
+            // word it can rather than skipping the whole sentence.
+            Err(_) => {
+                let words: Vec<String> = text
+                    .split_whitespace()
+                    .filter_map(|word| g2p.g2p(word).ok().map(|(phonemes, _)| phonemes))
+                    .filter(|phonemes| !phonemes.is_empty())
+                    .collect();
+                if words.is_empty() {
+                    bail!("could not phonemize \"{text}\"");
+                }
+                Ok(words.join(" "))
+            }
+        }
     }
 
     fn tokens(&mut self, text: &str, british: bool) -> Result<Vec<i64>> {
@@ -128,7 +179,9 @@ impl Kokoro {
     fn run(&mut self, tokens: &[i64], voice: &str, speed: f32) -> Result<Vec<f32>> {
         let count = tokens.len().min(MAX_TOKENS);
         let table = self.voices.get(voice).ok_or_else(|| anyhow!("unknown voice {voice}"))?;
-        let row = count.min(table.len() / STYLE_WIDTH - 1);
+        // Kokoro's reference code picks the style row for the phoneme count
+        // minus one: `voice[len(phonemes) - 1]`.
+        let row = count.saturating_sub(1).min(table.len() / STYLE_WIDTH - 1);
         let style = table[row * STYLE_WIDTH..(row + 1) * STYLE_WIDTH].to_vec();
 
         // The model expects a padding token at each end.

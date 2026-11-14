@@ -136,11 +136,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - Books
 
-    func importPDF(from url: URL) async {
+    func importBook(from url: URL) async {
         isImporting = true
         defer { isImporting = false }
         do {
-            let book = try await library.importPDF(from: url)
+            let book = try await library.importBook(from: url)
             open(book)
         } catch {
             importError = error.localizedDescription
@@ -160,11 +160,12 @@ final class AppModel: ObservableObject {
         do {
             let sentences = try library.sentences(for: book)
             let saved = library.position(for: book)?.sentenceIndex ?? book.sentenceIndex
-            player.open(book: book, sentences: sentences, startIndex: saved)
+            player.open(
+                book: book, sentences: sentences, paragraphEnds: library.paragraphEnds(for: book), startIndex: saved)
             library.markOpened(book)
             return true
         } catch {
-            importError = "That book's text could not be loaded. Try importing the PDF again."
+            importError = "That book's text could not be loaded. Try importing the book again."
             return false
         }
     }

@@ -5,11 +5,6 @@ options:
     macOS: "15.0"
   createIntermediateGroups: true
 
-packages:
-  SpeechSwift:
-    url: https://github.com/soniqo/speech-swift
-    from: 0.0.29
-
 targets:
   ArcVoice:
     type: application
@@ -38,18 +33,29 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - com.adobe.pdf
+          - CFBundleTypeName: EPUB Book
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.idpf.epub-container
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.arcvoice
+        PRODUCT_BUNDLE_IDENTIFIER: com.kaczmarowski.arcvoice
+        DEVELOPMENT_TEAM: LYLLW4UMWG
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: false
+        # The voice engine (apple/build-core.sh) and what it links against.
+        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security"
+        # ONNX Runtime's simulator build is for Apple Silicon Macs only.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
     dependencies:
-      - package: SpeechSwift
-        product: KokoroTTS
+      - framework: Frameworks/ArcVoiceCore.xcframework
+        embed: false
 
   ArcVoiceMac:
     type: application
@@ -73,6 +79,11 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - com.adobe.pdf
+          - CFBundleTypeName: EPUB Book
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.idpf.epub-container
     entitlements:
       path: ArcVoiceMac/ArcVoiceMac.entitlements
       properties:
@@ -82,13 +93,18 @@ targets:
     settings:
       base:
         PRODUCT_NAME: ArcVoice
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.arcvoice
+        PRODUCT_BUNDLE_IDENTIFIER: com.kaczmarowski.arcvoice
+        DEVELOPMENT_TEAM: LYLLW4UMWG
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: false
         ENABLE_HARDENED_RUNTIME: true
+        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security"
+        # ONNX Runtime ships for Apple Silicon Macs only.
+        ARCHS: arm64
     dependencies:
-      - package: SpeechSwift
-        product: KokoroTTS
+      - framework: Frameworks/ArcVoiceCore.xcframework
+        embed: false

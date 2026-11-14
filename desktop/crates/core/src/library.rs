@@ -9,8 +9,9 @@
 //!   Library/
 //!     library.json            list of books
 //!     <book id>/
-//!       book.pdf              the original file
+//!       book.pdf or book.epub the original file
 //!       sentences.json        extracted text, one string per sentence
+//!       paragraphs.json       indices of the sentences that end a paragraph
 //!       position.json         where she stopped
 //! ```
 //!
@@ -24,14 +25,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{pdf, text};
+use crate::{epub, pdf, text};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Book {
     pub id: String,
     pub title: String,
-    /// SHA-256 of the original PDF bytes. The same file on another device
+    /// SHA-256 of the original file's bytes. The same file on another device
     /// produces the same key, which is what sync matches on.
     pub book_key: String,
     pub page_count: usize,
@@ -141,9 +142,9 @@ impl Library {
         books
     }
 
-    /// Copies a PDF into the library and extracts its text. Importing a file
-    /// that is already in the library returns the existing book.
-    pub fn import_pdf(&mut self, source: &Path) -> Result<Book> {
+    /// Copies a PDF or EPUB into the library and extracts its text. Importing
+    /// a file that is already in the library returns the existing book.
+    pub fn import_book(&mut self, source: &Path) -> Result<Book> {
         let prepared = PreparedImport::read(source)?;
         self.add(prepared)
     }
@@ -158,8 +159,9 @@ impl Library {
         let id = prepared.book_key[..16].to_string();
         let dir = self.book_dir(&id);
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join("book.pdf"), &prepared.bytes)?;
+        fs::write(dir.join(format!("book.{}", prepared.extension)), &prepared.bytes)?;
         write_json(&dir.join("sentences.json"), &prepared.sentences)?;
+        write_json(&dir.join("paragraphs.json"), &prepared.paragraph_ends)?;
 
         let book = Book {
             id,
@@ -178,7 +180,13 @@ impl Library {
 
     pub fn sentences(&self, book: &Book) -> Result<Vec<String>> {
         read_json(&self.book_dir(&book.id).join("sentences.json"))
-            .ok_or_else(|| anyhow!("the text for \"{}\" is missing; import the PDF again", book.title))
+            .ok_or_else(|| anyhow!("the text for \"{}\" is missing; import the book again", book.title))
+    }
+
+    /// Indices of the sentences that end a paragraph. Books added before
+    /// paragraphs were tracked have none, and are paced sentence by sentence.
+    pub fn paragraph_ends(&self, book: &Book) -> Vec<usize> {
+        read_json(&self.book_dir(&book.id).join("paragraphs.json")).unwrap_or_default()
     }
 
     pub fn mark_opened(&mut self, id: &str) {
@@ -255,12 +263,16 @@ impl Library {
     }
 }
 
-/// A PDF that has been read and cleaned, ready to be added to the library.
+/// A PDF or EPUB that has been read and cleaned, ready to be added to the
+/// library.
 pub struct PreparedImport {
     pub title: String,
     pub book_key: String,
     pub page_count: usize,
     pub sentences: Vec<String>,
+    pub paragraph_ends: Vec<usize>,
+    /// "pdf" or "epub", decided by the file's contents, not its name.
+    extension: &'static str,
     bytes: Vec<u8>,
 }
 
@@ -270,16 +282,24 @@ impl PreparedImport {
     pub fn read(source: &Path) -> Result<Self> {
         let bytes = fs::read(source).with_context(|| format!("could not read {}", source.display()))?;
         let book_key = hex(&Sha256::digest(&bytes));
-        let extracted = pdf::extract(&bytes)?;
+        let (title, page_count, sentences, paragraph_ends, extension) = if epub::looks_like_epub(&bytes) {
+            let extracted = epub::extract(&bytes)?;
+            (extracted.title, extracted.page_count, extracted.sentences, extracted.paragraph_ends, "epub")
+        } else {
+            let extracted = pdf::extract(&bytes)?;
+            (extracted.title, extracted.page_count, extracted.sentences, extracted.paragraph_ends, "pdf")
+        };
         let fallback_title = source
             .file_stem()
             .map(|stem| stem.to_string_lossy().replace('_', " "))
             .unwrap_or_else(|| "Untitled".to_string());
         Ok(Self {
-            title: extracted.title.unwrap_or(fallback_title),
+            title: title.unwrap_or(fallback_title),
             book_key,
-            page_count: extracted.page_count,
-            sentences: extracted.sentences,
+            page_count,
+            sentences,
+            paragraph_ends,
+            extension,
             bytes,
         })
     }

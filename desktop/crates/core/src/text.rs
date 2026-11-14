@@ -11,12 +11,148 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+/// Sentences in reading order, with the ones that end a paragraph marked so
+/// the reader can pause longer there, the way a narrator does.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Prose {
+    pub sentences: Vec<String>,
+    /// Indices into `sentences`, ascending.
+    pub paragraph_ends: Vec<usize>,
+}
+
+impl Prose {
+    fn push_block(&mut self, sentences: impl IntoIterator<Item = String>) {
+        let before = self.sentences.len();
+        self.sentences.extend(sentences);
+        if self.sentences.len() > before {
+            self.paragraph_ends.push(self.sentences.len() - 1);
+        }
+    }
+}
+
 /// Raw text of each page, in reading order, to sentences in reading order.
 pub fn sentences_from_pages(pages: &[String]) -> Vec<String> {
+    prose_from_pages(pages).sentences
+}
+
+/// Like `sentences_from_pages`, keeping paragraph ends.
+///
+/// A PDF does not say where paragraphs end, but typeset prose shows it: the
+/// last line of a paragraph ends a sentence and stops well short of the
+/// right margin. Lines are compared with the book's typical full line.
+pub fn prose_from_pages(pages: &[String]) -> Prose {
     let page_lines: Vec<Vec<String>> = pages.iter().map(|page| lines(page)).collect();
     let stripped = remove_repeated_lines(&page_lines);
-    let blocks = join_into_blocks(&stripped);
-    blocks.iter().flat_map(|block| split_sentences(block)).collect()
+    let full_line = typical_line_length(&stripped);
+    let mut prose = Prose::default();
+    for block in join_lines(&stripped, full_line) {
+        prose.push_block(split_sentences(&block));
+    }
+    prose
+}
+
+/// The length of a full line of body text: the median of the longer lines.
+fn typical_line_length(pages: &[Vec<String>]) -> Option<usize> {
+    let mut lengths: Vec<usize> = pages
+        .iter()
+        .flatten()
+        .map(|line| line.chars().count())
+        .filter(|length| *length >= 25)
+        .collect();
+    if lengths.len() < 10 {
+        return None;
+    }
+    lengths.sort_unstable();
+    let median = lengths[lengths.len() / 2];
+    (median >= 40).then_some(median)
+}
+
+/// One paragraph of an EPUB chapter, as the book's markup laid it out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Paragraph {
+    pub text: String,
+    /// True when the markup itself says this is a heading (`<h1>` to `<h6>`).
+    pub is_heading: bool,
+}
+
+/// Paragraphs of each EPUB chapter, in reading order, to sentences.
+///
+/// An EPUB has no pages, so there are no running headers or page numbers to
+/// find. What it can have is a watermark paragraph stamped into every chapter
+/// ("This copy is licensed to reader@example.com"). Stamps go at the start or
+/// end of a chapter, so the rule only looks there: a short paragraph among the
+/// first or last three of a chapter, whose fingerprint sits in that zone in
+/// half or more of the chapters (and at least four), is dropped. Looking only
+/// at the edges keeps short lines of dialogue like "No." that recur all
+/// through a book. Headings are compared by their exact text instead, so
+/// "Chapter 1" and "Chapter 2" survive while a repeated "ADVANCE READER COPY"
+/// banner does not.
+pub fn sentences_from_chapters(chapters: &[Vec<Paragraph>]) -> Vec<String> {
+    prose_from_chapters(chapters).sentences
+}
+
+/// Like `sentences_from_chapters`, keeping paragraph ends.
+pub fn prose_from_chapters(chapters: &[Vec<Paragraph>]) -> Prose {
+    let chapters: Vec<Vec<(String, bool)>> = chapters
+        .iter()
+        .map(|paragraphs| {
+            paragraphs
+                .iter()
+                .map(|paragraph| {
+                    let text = lines(&paragraph.text).join(" ");
+                    let heading = paragraph.is_heading || is_heading(&text);
+                    (text, heading)
+                })
+                .filter(|(text, _)| has_letters_or_digits(text) && !is_contents_entry(text))
+                .collect()
+        })
+        .collect();
+
+    let repeat_key = |text: &str, heading: bool| {
+        if heading {
+            format!("h:{}", text.to_lowercase())
+        } else {
+            format!("p:{}", fingerprint(text))
+        }
+    };
+    let chapter_count = chapters.len();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let in_stamp_zone = |index: usize, count: usize| index < 3 || index + 3 >= count;
+    if chapter_count >= 4 {
+        for paragraphs in &chapters {
+            let seen: HashSet<String> = paragraphs
+                .iter()
+                .enumerate()
+                .filter(|(index, (text, _))| in_stamp_zone(*index, paragraphs.len()) && text.chars().count() <= 100)
+                .map(|(_, (text, heading))| repeat_key(text, *heading))
+                .collect();
+            for key in seen {
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+    let minimum = ((chapter_count as f64 * 0.5).ceil() as usize).max(4);
+
+    let mut prose = Prose::default();
+    for paragraphs in &chapters {
+        for (index, (text, heading)) in paragraphs.iter().enumerate() {
+            if chapter_count >= 4
+                && in_stamp_zone(index, paragraphs.len())
+                && text.chars().count() <= 100
+                && counts.get(&repeat_key(text, *heading)).copied().unwrap_or(0) >= minimum
+            {
+                continue;
+            }
+            if *heading {
+                prose.push_block([if is_all_caps(text) { title_case(text) } else { text.clone() }]);
+            } else {
+                // Each paragraph is its own block, so a paragraph that ends
+                // without punctuation never runs into the next one.
+                prose.push_block(split_sentences(text));
+            }
+        }
+    }
+    prose
 }
 
 // ---------------------------------------------------------------------------
@@ -29,8 +165,8 @@ pub fn lines(page: &str) -> Vec<String> {
     for character in page.chars() {
         match character {
             '\r' | '\u{2028}' | '\u{2029}' => text.push('\n'),
-            // Soft hyphen and zero-width space carry no sound.
-            '\u{00AD}' | '\u{200B}' => {}
+            // Soft hyphen, zero-width space and word joiners carry no sound.
+            '\u{00AD}' | '\u{200B}' | '\u{2060}' | '\u{FEFF}' => {}
             '\u{00A0}' | '\u{2009}' | '\u{200A}' | '\u{202F}' | '\t' => text.push(' '),
             '\u{FB00}' => text.push_str("ff"),
             '\u{FB01}' => text.push_str("fi"),
@@ -244,11 +380,23 @@ pub fn is_heading(line: &str) -> bool {
     HEADING_WORDS.contains(&first.as_str()) || is_all_caps(line)
 }
 
-/// "CHAPTER ONE" reads more naturally as "Chapter One".
+/// "CHAPTER ONE" reads more naturally as "Chapter One". Roman numerals stay
+/// in capitals ("PART III" is "Part III", not "Part Iii") so they can still be
+/// read as numbers.
 fn title_case(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut start_of_word = true;
+    let mut words_left = line.split(|c: char| !c.is_alphabetic()).filter(|word| !word.is_empty());
+    let mut keep_word = false;
     for character in line.chars() {
+        if character.is_alphabetic() && start_of_word {
+            keep_word = words_left.next().is_some_and(is_roman_numeral);
+        }
+        if keep_word && character.is_alphabetic() {
+            out.push(character);
+            start_of_word = false;
+            continue;
+        }
         if character.is_alphabetic() {
             if start_of_word {
                 out.extend(character.to_uppercase());
@@ -264,12 +412,27 @@ fn title_case(line: &str) -> String {
     out
 }
 
+fn is_roman_numeral(word: &str) -> bool {
+    word.len() <= 8
+        && word.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C'))
+        && !matches!(word, "I" | "LIV" | "CIVIC" | "CIVIL" | "VIC" | "LIC")
+}
+
 /// Merges the lines of every page into blocks of running text. A heading
 /// becomes a block of its own; everything between headings is one block,
 /// carried across page breaks so a sentence split by a page turn is whole.
 pub fn join_into_blocks(pages: &[Vec<String>]) -> Vec<String> {
+    join_lines(pages, None)
+}
+
+/// `join_into_blocks`, also ending a block at each paragraph end when the
+/// length of a full line is known.
+fn join_lines(pages: &[Vec<String>], full_line: Option<usize>) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut current = String::new();
+    let ends_paragraph = |line: &str| {
+        full_line.is_some_and(|full| ends_like_sentence(line) && line.chars().count() * 100 < full * 78)
+    };
 
     for lines in pages {
         for line in lines {
@@ -283,22 +446,26 @@ pub fn join_into_blocks(pages: &[Vec<String>]) -> Vec<String> {
             }
             if current.is_empty() {
                 current.push_str(line);
-                continue;
-            }
-            // A word broken across lines: "some-" + "thing" -> "something".
-            let ends_with_hyphen = current.ends_with('-') || current.ends_with('\u{2010}');
-            let letter_before_hyphen = {
-                let mut reversed = current.chars().rev();
-                reversed.next();
-                reversed.next().is_some_and(|c| c.is_alphabetic())
-            };
-            let continues_lowercase = line.chars().next().is_some_and(|c| c.is_lowercase());
-            if ends_with_hyphen && letter_before_hyphen && continues_lowercase {
-                current.pop();
-                current.push_str(line);
             } else {
-                current.push(' ');
-                current.push_str(line);
+                // A word broken across lines: "some-" + "thing" -> "something".
+                let ends_with_hyphen = current.ends_with('-') || current.ends_with('\u{2010}');
+                let letter_before_hyphen = {
+                    let mut reversed = current.chars().rev();
+                    reversed.next();
+                    reversed.next().is_some_and(|c| c.is_alphabetic())
+                };
+                let continues_lowercase = line.chars().next().is_some_and(|c| c.is_lowercase());
+                if ends_with_hyphen && letter_before_hyphen && continues_lowercase {
+                    current.pop();
+                    current.push_str(line);
+                } else {
+                    current.push(' ');
+                    current.push_str(line);
+                }
+            }
+            if ends_paragraph(line) {
+                blocks.push(current.trim().to_string());
+                current.clear();
             }
         }
     }
@@ -526,6 +693,47 @@ mod tests {
             split_sentences("\u{201C}Wait!\u{201D} Mara whispered. \u{201C}Why?\u{201D} The door closed."),
             vec!["\u{201C}Wait!\u{201D} Mara whispered.", "\u{201C}Why?\u{201D}", "The door closed."]
         );
+    }
+
+    #[test]
+    fn finds_paragraph_ends_from_short_last_lines() {
+        let full = "The keeper climbed the stairs again and looked out across the grey";
+        let pages = vec![[
+            full,
+            "water, where the boat had been. It was gone now.",
+            "\u{201C}No,\u{201D} she said.",
+            full,
+            "water and the gulls and the long line of the shore beyond the point",
+            "where the light could not reach at all, and he went back down.",
+            full,
+            full,
+            full,
+            full,
+            full,
+            "where nothing moved.",
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")];
+        let prose = prose_from_pages(&pages);
+        let ends: Vec<&str> = prose.paragraph_ends.iter().map(|&index| prose.sentences[index].as_str()).collect();
+        assert_eq!(ends.len(), 3, "{ends:?}");
+        assert_eq!(ends[0], "It was gone now.");
+        assert_eq!(ends[1], "\u{201C}No,\u{201D} she said.");
+        assert!(ends[2].ends_with("where nothing moved."));
+    }
+
+    #[test]
+    fn epub_paragraphs_and_headings_end_blocks() {
+        let paragraph = |text: &str, is_heading: bool| Paragraph { text: text.to_string(), is_heading };
+        let prose = prose_from_chapters(&[vec![
+            paragraph("CHAPTER III", true),
+            paragraph("One. Two.", false),
+            paragraph("Three.", false),
+        ]]);
+        assert_eq!(prose.sentences, vec!["Chapter III", "One.", "Two.", "Three."]);
+        assert_eq!(prose.paragraph_ends, vec![0, 2, 3]);
     }
 
     #[test]

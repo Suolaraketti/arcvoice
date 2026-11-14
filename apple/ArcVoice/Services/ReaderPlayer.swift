@@ -40,14 +40,20 @@ final class ReaderPlayer: ObservableObject {
         }
     }
 
-    /// Playback speed. Applied by a time-stretch unit, so it changes instantly
-    /// and keeps the pitch of the voice.
+    /// Reading speed, 0.5 to 2. The voice itself speaks faster or slower,
+    /// which sounds natural; stretching recorded audio would sound phasey.
+    /// Sentences already rendered at the old speed are rendered again.
     var rate: Float = 1.0 {
         didSet {
-            timePitch.rate = min(2.0, max(0.5, rate))
+            rate = min(2.0, max(0.5, rate))
+            guard rate != oldValue else { return }
+            if book != nil { seek(to: currentIndex) }
             updateNowPlaying()
         }
     }
+
+    /// Sentences after which a paragraph ends, for a longer pause.
+    private(set) var paragraphEnds: Set<Int> = []
 
     /// Called whenever the reading position changes: book id, sentence index, sentence text.
     var onPositionChanged: (@MainActor (UUID, Int, String) -> Void)?
@@ -57,16 +63,12 @@ final class ReaderPlayer: ObservableObject {
     private let engine: SpeechEngine
     private let audioEngine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
-    private let timePitch = AVAudioUnitTimePitch()
     private let format: AVAudioFormat
 
     // MARK: - Queue bookkeeping
 
     /// How many sentences to keep rendered beyond the one being spoken.
     private let lookahead = 3
-    /// A short breath between sentences, in seconds. Headings get a longer one.
-    private let sentenceGap = 0.12
-    private let headingGap = 0.45
 
     /// Bumped on every seek or stop. Anything still in flight from an older
     /// generation (a render, a buffer callback) sees the mismatch and is ignored.
@@ -86,9 +88,7 @@ final class ReaderPlayer: ObservableObject {
         self.format = AVAudioFormat(standardFormatWithSampleRate: SpeechEngine.sampleRate, channels: 1)!
 
         audioEngine.attach(node)
-        audioEngine.attach(timePitch)
-        audioEngine.connect(node, to: timePitch, format: format)
-        audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        audioEngine.connect(node, to: audioEngine.mainMixerNode, format: format)
 
         registerRemoteCommands()
         registerNotifications()
@@ -96,10 +96,11 @@ final class ReaderPlayer: ObservableObject {
 
     // MARK: - Opening a book
 
-    func open(book: Book, sentences: [String], startIndex: Int) {
+    func open(book: Book, sentences: [String], paragraphEnds: Set<Int>, startIndex: Int) {
         stopAudio()
         self.book = book
         self.sentences = sentences
+        self.paragraphEnds = paragraphEnds
         self.currentIndex = min(max(0, startIndex), max(0, sentences.count - 1))
         self.nextToSynthesize = currentIndex
         self.state = .paused
@@ -111,6 +112,7 @@ final class ReaderPlayer: ObservableObject {
         stopAudio()
         book = nil
         sentences = []
+        paragraphEnds = []
         currentIndex = 0
         state = .idle
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -214,11 +216,14 @@ final class ReaderPlayer: ObservableObject {
             let index = nextToSynthesize
             let text = sentences[index]
             let voiceName = voice
+            let speed = rate
+            let endsParagraph = paragraphEnds.contains(index)
             if index == currentIndex { isBuffering = true }
 
             let samples: [Float]
             do {
-                samples = try await engine.synthesize(text, voice: voiceName)
+                samples = try await engine.synthesize(
+                    text, voice: voiceName, speed: speed, endsParagraph: endsParagraph)
             } catch {
                 guard pumpGeneration == generation else { return }
                 isBuffering = false
@@ -242,10 +247,10 @@ final class ReaderPlayer: ObservableObject {
         updateNowPlaying()
     }
 
+    /// Queues a rendered sentence. The engine has already trimmed it and
+    /// added the pause that follows it.
     private func schedule(_ samples: [Float], index: Int, generation scheduledGeneration: Int) {
-        let gapSeconds = TextCleaner.isHeading(sentences[index]) ? headingGap : sentenceGap
-        let gapFrames = Int(gapSeconds * SpeechEngine.sampleRate)
-        let totalFrames = samples.count + gapFrames
+        let totalFrames = max(1, samples.count)
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
               let channel = buffer.floatChannelData?[0] else {
@@ -255,14 +260,11 @@ final class ReaderPlayer: ObservableObject {
             return
         }
         buffer.frameLength = AVAudioFrameCount(totalFrames)
+        channel[0] = 0
         samples.withUnsafeBufferPointer { source in
             if let base = source.baseAddress {
                 channel.update(from: base, count: samples.count)
             }
-        }
-        // The frames after the speech are the pause between sentences.
-        for frame in samples.count..<totalFrames {
-            channel[frame] = 0
         }
 
         node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
