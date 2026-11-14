@@ -272,11 +272,11 @@ final class ReaderPlayer: ObservableObject {
                     // Buffering starts again once the voice has loaded.
                     return
                 } catch {
+                    // One piece the voice cannot read must not stop the book.
+                    // Log it and pass over it with a beat of silence.
                     guard pumpGeneration == generation else { return }
-                    isBuffering = false
-                    lastError = "The voice hit a problem: \(error.localizedDescription)"
-                    pauseAfterFailure()
-                    return
+                    log.error("skipped sentence \(index): \(error.localizedDescription)")
+                    samples = [Float](repeating: 0, count: Int(SpeechEngine.sampleRate * 0.3))
                 }
 
                 // A seek, or a voice or speed change, may have happened meanwhile.
@@ -343,13 +343,6 @@ final class ReaderPlayer: ObservableObject {
         let mark = characters[index]
         if mark == "\u{2014}" || mark == "\u{2013}" { return true }
         return [",", ";", ":"].contains(mark) && index + 1 < characters.count && characters[index + 1] == " "
-    }
-
-    private func pauseAfterFailure() {
-        node.pause()
-        audioEngine.pause()
-        state = .paused
-        updateNowPlaying()
     }
 
     /// Queues rendered audio for sentence `index`: all of it, or its opening

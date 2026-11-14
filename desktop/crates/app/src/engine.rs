@@ -208,9 +208,16 @@ fn voice_thread(
             }
             report(VoiceStatus::Ready, narrator.voices());
         }
-        let result = narrator
-            .synthesize(&request.text, &request.voice, request.speed)
-            .map_err(|error| format!("{error:#}"));
+        // One sentence the voice cannot read must not stop the book: it is
+        // logged and passed over with a beat of silence.
+        let result = match narrator.synthesize(&request.text, &request.voice, request.speed) {
+            Ok(samples) => Ok(samples),
+            Err(error) if narrator.is_ready() => {
+                eprintln!("skipped sentence {}: {error:#}", request.index);
+                Ok(arcvoice_core::narrator::scene_break(request.speed))
+            }
+            Err(error) => Err(format!("{error:#}")),
+        };
         let _ = messages.send(Message::Rendered { generation: request.generation, index: request.index, result });
     }
 }

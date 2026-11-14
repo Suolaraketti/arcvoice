@@ -115,6 +115,9 @@ impl Phonon {
         }
 
         let text = speech_text::prepare(text);
+        if !crate::narrator::has_words(&text) {
+            return Ok(crate::narrator::scene_break(speed));
+        }
         // The same sentence always gets the same take, so going back a
         // sentence replays it as it was rather than a new reading of it.
         let options = SpeechOptions::default().voice(voice).temperature(TEMPERATURE).seed(seed_for(&text));
