@@ -6,6 +6,7 @@ struct ReaderView: View {
 
     /// Non-nil only while the progress slider is being dragged.
     @State private var scrubValue: Double?
+    @State private var showingChapters = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,9 +22,50 @@ struct ReaderView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            if !player.chapters.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingChapters = true
+                    } label: {
+                        Label("Chapters", systemImage: "list.bullet")
+                    }
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 settingsMenu
             }
+        }
+        .sheet(isPresented: $showingChapters) {
+            ChapterList()
+                .environmentObject(player)
+        }
+    }
+
+    /// The chapter being read, "Chapter 3 of 31". Tapping it lists them all.
+    @ViewBuilder
+    private var chapterRow: some View {
+        if let index = player.currentChapterIndex {
+            Button {
+                showingChapters = true
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(player.chapters[index].title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("Chapter \(index + 1) of \(player.chapters.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "list.bullet")
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Chapter: \(player.chapters[index].title). Show chapters")
         }
     }
 
@@ -67,6 +109,7 @@ struct ReaderView: View {
 
     private var controls: some View {
         VStack(spacing: 10) {
+            chapterRow
             progress
             statusLine
             HStack(spacing: 36) {

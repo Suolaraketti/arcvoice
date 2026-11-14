@@ -46,6 +46,10 @@ final class LibraryStore: ObservableObject {
         folder(for: id).appendingPathComponent("sentences.json")
     }
 
+    private func chaptersURL(for id: UUID) -> URL {
+        folder(for: id).appendingPathComponent("chapters.json")
+    }
+
     private func paragraphsURL(for id: UUID) -> URL {
         folder(for: id).appendingPathComponent("paragraphs.json")
     }
@@ -147,6 +151,8 @@ final class LibraryStore: ObservableObject {
             try data.write(to: sentencesURL(for: id), options: .atomic)
             let paragraphs = try JSONEncoder().encode(extracted.paragraphEnds)
             try paragraphs.write(to: paragraphsURL(for: id), options: .atomic)
+            let chapters = try JSONEncoder().encode(extracted.chapters)
+            try chapters.write(to: chaptersURL(for: id), options: .atomic)
         } catch {
             try? FileManager.default.removeItem(at: bookFolder)
             throw error
@@ -227,6 +233,16 @@ final class LibraryStore: ObservableObject {
         #else
         return Host.current().localizedName ?? "Mac"
         #endif
+    }
+
+    /// The book's chapters. Books added before chapters were saved get them
+    /// worked out from their sentences.
+    func chapters(for book: Book, sentences: [String], paragraphEnds: Set<Int>) -> [Chapter] {
+        if let data = try? Data(contentsOf: chaptersURL(for: book.id)),
+           let chapters = try? JSONDecoder().decode([Chapter].self, from: data) {
+            return chapters
+        }
+        return Chapter.guessed(sentences: sentences, paragraphEnds: paragraphEnds)
     }
 
     func delete(_ book: Book) {

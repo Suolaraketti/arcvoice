@@ -27,6 +27,22 @@ final class ReaderPlayer: ObservableObject {
     @Published private(set) var book: Book?
     @Published private(set) var sentences: [String] = []
     @Published private(set) var currentIndex = 0
+    /// The book's chapters, empty when it has none worth listing.
+    @Published private(set) var chapters: [Chapter] = []
+
+    /// Position in `chapters` of the chapter being read.
+    var currentChapterIndex: Int? {
+        Chapter.index(containing: currentIndex, in: chapters)
+    }
+
+    var currentChapter: Chapter? {
+        currentChapterIndex.map { chapters[$0] }
+    }
+
+    /// Jumps to the start of a chapter. Keeps playing if it was playing.
+    func play(chapter: Chapter) {
+        seek(to: chapter.start)
+    }
     /// True while the sentence that should be playing is still being rendered.
     @Published private(set) var isBuffering = false
     @Published var lastError: String?
@@ -110,11 +126,12 @@ final class ReaderPlayer: ObservableObject {
 
     // MARK: - Opening a book
 
-    func open(book: Book, sentences: [String], paragraphEnds: Set<Int>, startIndex: Int) {
+    func open(book: Book, sentences: [String], paragraphEnds: Set<Int>, chapters: [Chapter], startIndex: Int) {
         stopAudio()
         self.book = book
         self.sentences = sentences
         self.paragraphEnds = paragraphEnds
+        self.chapters = chapters
         self.currentIndex = min(max(0, startIndex), max(0, sentences.count - 1))
         self.nextToSynthesize = currentIndex
         self.state = .paused
@@ -134,6 +151,7 @@ final class ReaderPlayer: ObservableObject {
         book = nil
         sentences = []
         paragraphEnds = []
+        chapters = []
         currentIndex = 0
         state = .idle
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -461,9 +479,11 @@ final class ReaderPlayer: ObservableObject {
         let percent = sentences.count > 1
             ? Int((Double(currentIndex) / Double(sentences.count - 1) * 100).rounded())
             : 0
+        // The lock screen shows the chapter under the book's title.
+        let detail = currentChapter.map { "\($0.title) \u{00B7} \(percent)%" } ?? "\(percent)% read"
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
             MPMediaItemPropertyTitle: book.title,
-            MPMediaItemPropertyArtist: "\(percent)% read",
+            MPMediaItemPropertyArtist: detail,
             MPNowPlayingInfoPropertyPlaybackRate: state == .playing ? Double(rate) : 0.0,
         ]
         #if os(macOS)

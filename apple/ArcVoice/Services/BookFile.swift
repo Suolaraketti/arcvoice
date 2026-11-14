@@ -231,7 +231,8 @@ enum BookFile {
             pageCount: pageCount ?? max(1, (words + 274) / 275),
             sentences: sentences,
             paragraphEnds: prose.paragraphEnds,
-            bookKey: try PDFTextExtractor.fileKey(for: url)
+            bookKey: try PDFTextExtractor.fileKey(for: url),
+            chapters: Chapter.list(sentences: sentences, headings: prose.headings)
         )
     }
 
@@ -656,10 +657,16 @@ enum BookFile {
         let openings: [(page: Int, line: Int)] = pages.indices.compactMap { index in
             let lines = pages[index].components(separatedBy: "\n")
             guard lines.first?.trimmingCharacters(in: .whitespaces) == "\u{FFFC}",
-                  // Skipping the rest of a heading broken with a hyphen ("double-", "checks").
+                  // The opening reads like body text: a long line, a finished
+                  // sentence, or a long line after it. That skips the rest of a
+                  // title broken over two lines ("double-" "checks", "And then
+                  // there was" "one").
                   let line = lines.prefix(8).indices.first(where: { index in
-                      (lines[index].trimmingCharacters(in: .whitespaces).first?.isLowercase ?? false)
+                      let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+                      let next = index + 1 < lines.count ? lines[index + 1].trimmingCharacters(in: .whitespaces) : ""
+                      return (trimmed.first?.isLowercase ?? false)
                           && !(index > 0 && lines[index - 1].trimmingCharacters(in: .whitespaces).hasSuffix("-"))
+                          && (trimmed.count >= 30 || TextCleaner.endsLikeSentence(trimmed) || next.count >= 30)
                   }),
                   lines[1..<line].allSatisfy({ heading in
                       let trimmed = heading.trimmingCharacters(in: .whitespaces)
@@ -670,13 +677,25 @@ enum BookFile {
         }
         guard !openings.isEmpty else { return pages }
 
+        // Counted once: every word, and every run of two and three words as
+        // written (punctuation included), so each guess is a lookup.
         let whole = pages.joined(separator: "\n")
         var counts: [String: Int] = [:]
         whole.enumerateSubstrings(in: whole.startIndex..., options: .byWords) { word, _, _, _ in
             if let word { counts[word, default: 0] += 1 }
         }
-        func uses(_ phrase: String) -> Int {
-            whole.components(separatedBy: phrase).count - 1
+        let tokens = whole.split(whereSeparator: \.isWhitespace).map(String.init)
+        var pairs: [String: Int] = [:]
+        var triples: [String: Int] = [:]
+        for index in tokens.indices.dropLast() {
+            pairs[tokens[index] + " " + tokens[index + 1], default: 0] += 1
+            if index + 2 < tokens.count {
+                triples[tokens[index] + " " + tokens[index + 1] + " " + tokens[index + 2], default: 0] += 1
+            }
+        }
+        func uses(_ words: [String]) -> Int {
+            let phrase = words.joined(separator: " ")
+            return words.count == 3 ? triples[phrase] ?? 0 : words.count == 2 ? pairs[phrase] ?? 0 : 0
         }
 
         var restored = pages
@@ -693,24 +712,38 @@ enum BookFile {
 
     /// The best start for an opening that lost its first letter: a capital
     /// joined to it, or "I " or "A " before it. Scored by how often the book
-    /// uses the result, a word that starts a sentence counting most.
-    static func dropCapLetter(for line: String, counts: [String: Int], uses: (String) -> Int) -> String? {
+    /// uses the result with the words that follow it ("What the fuck" beats
+    /// "That the fuck"), then the word alone, a capitalized one counting most.
+    static func dropCapLetter(for line: String, counts: [String: Int], uses: ([String]) -> Int) -> String? {
         let fragment = String(line.prefix { $0.isLetter || $0 == "'" || $0 == "\u{2019}" })
         guard !fragment.isEmpty else { return nil }
+        let tokens = line.split(whereSeparator: \.isWhitespace).map(String.init)
         var best: (text: String, score: Int)?
         func consider(_ text: String, _ score: Int) {
             if score > 0, score > (best?.score ?? 0) { best = (text, score) }
         }
+        /// How often the book has these words in a row: three counting most.
+        func phraseScore(_ words: [String]) -> Int {
+            (words.count >= 3 ? uses(Array(words.prefix(3))) * 40 : 0) + (words.count >= 2 ? uses(Array(words.prefix(2))) * 10 : 0)
+        }
+        // A question usually opens with a question word: "Is it grass?", not "As it grass?".
+        let sentenceEnd = line.firstIndex { ".!?".contains($0) }
+        let isQuestion = sentenceEnd.map { line[$0] == "?" } ?? false
+        let questionWords: Set<String> = [
+            "Is", "Are", "Was", "Were", "Do", "Does", "Did", "Can", "Could", "Will", "Would", "Should", "Have",
+            "Has", "What", "Where", "When", "Why", "Who", "How", "Which",
+        ]
         for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
             let word = String(letter) + fragment
-            consider(String(letter) + line, (counts[word] ?? 0) * 3 + (counts[word.lowercased()] ?? 0))
+            let words = [String(letter) + tokens[0]] + tokens.dropFirst()
+            var score = phraseScore(words) + (counts[word] ?? 0) * 3 + (counts[word.lowercased()] ?? 0)
+            if isQuestion, questionWords.contains(word) { score *= 4 }
+            consider(String(letter) + line, score)
         }
-        // "I throw": a word of its own. Counted as a phrase, three words long
-        // where the line allows, so "I throw" beats "Ithrow" but "It was"
-        // beats "I t was".
-        let words = line.split(separator: " ").prefix(2).joined(separator: " ")
+        // "I throw": a word of its own. Not for a single letter, so "It was"
+        // is never "I t was".
         for pronoun in ["I", "A"] where fragment.count > 1 {
-            consider(pronoun + " " + line, uses(pronoun + " " + words) * 3)
+            consider(pronoun + " " + line, phraseScore([pronoun] + tokens))
         }
         return best?.text
     }

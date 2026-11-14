@@ -180,8 +180,11 @@ final class AppModel: ObservableObject {
         do {
             let sentences = try library.sentences(for: book)
             let saved = library.position(for: book)?.sentenceIndex ?? book.sentenceIndex
+            let paragraphEnds = library.paragraphEnds(for: book)
             player.open(
-                book: book, sentences: sentences, paragraphEnds: library.paragraphEnds(for: book), startIndex: saved)
+                book: book, sentences: sentences, paragraphEnds: paragraphEnds,
+                chapters: library.chapters(for: book, sentences: sentences, paragraphEnds: paragraphEnds),
+                startIndex: saved)
             library.markOpened(book)
             return true
         } catch {

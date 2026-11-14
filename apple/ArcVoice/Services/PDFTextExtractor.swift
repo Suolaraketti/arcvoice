@@ -26,6 +26,7 @@ struct ExtractedBook: Sendable {
     /// Indices of the sentences that end a paragraph.
     var paragraphEnds: [Int]
     var bookKey: String
+    var chapters: [Chapter] = []
 }
 
 /// Reads a PDF with Apple's built-in PDFKit. Safe to call off the main thread;
@@ -62,7 +63,8 @@ enum PDFTextExtractor {
             pageCount: document.pageCount,
             sentences: sentences,
             paragraphEnds: prose.paragraphEnds,
-            bookKey: try fileKey(for: url)
+            bookKey: try fileKey(for: url),
+            chapters: Chapter.list(sentences: sentences, headings: prose.headings)
         )
     }
 

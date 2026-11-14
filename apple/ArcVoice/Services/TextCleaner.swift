@@ -17,11 +17,18 @@ enum TextCleaner {
         var sentences: [String] = []
         /// Indices into `sentences`, ascending.
         var paragraphEnds: [Int] = []
+        /// Sentences that are headings (chapter titles, part titles), ascending.
+        var headings: [Int] = []
 
         mutating func appendBlock(_ block: [String]) {
             guard !block.isEmpty else { return }
             sentences.append(contentsOf: block)
             paragraphEnds.append(sentences.count - 1)
+        }
+
+        mutating func appendHeading(_ heading: String) {
+            appendBlock([heading])
+            headings.append(sentences.count - 1)
         }
     }
 
@@ -41,7 +48,11 @@ enum TextCleaner {
         let stripped = removeRepeatedLines(pageLines)
         var prose = Prose()
         for block in joinIntoBlocks(stripped, fullLine: typicalLineLength(stripped)) {
-            prose.appendBlock(splitSentences(block))
+            if block.isHeading {
+                prose.appendHeading(block.text)
+            } else {
+                prose.appendBlock(splitSentences(block.text))
+            }
         }
         return prose
     }
@@ -120,7 +131,7 @@ enum TextCleaner {
                 if paragraph.isHeading {
                     let letters = paragraph.text.filter { $0.isLetter }
                     let allCaps = letters.count >= 3 && letters.allSatisfy { $0.isUppercase }
-                    prose.appendBlock([allCaps ? titleCase(paragraph.text) : paragraph.text])
+                    prose.appendHeading(allCaps ? titleCase(paragraph.text) : paragraph.text)
                 } else {
                     // Each paragraph is its own block, so a paragraph that ends
                     // without punctuation never runs into the next one.
@@ -331,8 +342,13 @@ enum TextCleaner {
     /// Merges the lines of every page into blocks of running text. A heading
     /// becomes a block of its own; everything between headings is one block,
     /// carried across page breaks so a sentence split by a page turn is whole.
-    static func joinIntoBlocks(_ pages: [[String]], fullLine: Int? = nil) -> [String] {
-        var blocks: [String] = []
+    struct Block: Equatable {
+        var text: String
+        var isHeading: Bool
+    }
+
+    static func joinIntoBlocks(_ pages: [[String]], fullLine: Int? = nil) -> [Block] {
+        var blocks: [Block] = []
         var current = ""
         func endsParagraph(_ line: String) -> Bool {
             guard let fullLine else { return false }
@@ -341,20 +357,42 @@ enum TextCleaner {
 
         func flush() {
             let trimmed = current.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty { blocks.append(trimmed) }
+            if !trimmed.isEmpty { blocks.append(Block(text: trimmed, isHeading: false)) }
             current = ""
         }
 
+        /// A chapter page opens with short title lines ("Night stories", then
+        /// the narrator, "Rhea") above the first paragraph. Only at the top of
+        /// a page, after a paragraph that has ended, and only short lines
+        /// that start with a capital and do not end a sentence.
+        func isPageTopHeading(_ line: String, position: Int) -> Bool {
+            guard let fullLine, position < 5, current.isEmpty, line.count * 100 < fullLine * 50,
+                  !endsLikeSentence(line), let first = line.first, first.isUppercase || first.isNumber
+            else { return false }
+            return hasLettersOrDigits(line)
+        }
+
         for lines in pages {
-            for line in lines {
-                if isHeading(line) {
+            var bodyStarted = false
+            for (position, line) in lines.enumerated() {
+                if isHeading(line) || (!bodyStarted && isPageTopHeading(line, position: position)) {
                     flush()
                     // "CHAPTER ONE" reads more naturally as "Chapter One".
                     let letters = line.filter { $0.isLetter }
                     let allCaps = !letters.isEmpty && letters.allSatisfy { $0.isUppercase }
-                    blocks.append(allCaps ? titleCase(line) : line)
+                    blocks.append(Block(text: allCaps ? titleCase(line) : line, isHeading: true))
                     continue
                 }
+                // The rest of a heading broken over two lines: "Mistakes and
+                // double-" then "checks", or "And then there was" then "one".
+                if !bodyStarted, current.isEmpty, var last = blocks.last, last.isHeading,
+                   line.count < 25, !endsLikeSentence(line),
+                   last.text.hasSuffix("-") || (line.first?.isLowercase ?? false) {
+                    last.text += last.text.hasSuffix("-") ? line : " " + line
+                    blocks[blocks.count - 1] = last
+                    continue
+                }
+                bodyStarted = true
                 if current.isEmpty {
                     current = line
                 } else if let last = current.last, last == "-" || last == "\u{2010}",

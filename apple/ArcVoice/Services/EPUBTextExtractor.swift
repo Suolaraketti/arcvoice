@@ -74,7 +74,8 @@ enum EPUBTextExtractor {
             pageCount: max(1, (words + 274) / 275),
             sentences: sentences,
             paragraphEnds: prose.paragraphEnds,
-            bookKey: try PDFTextExtractor.fileKey(for: url)
+            bookKey: try PDFTextExtractor.fileKey(for: url),
+            chapters: Chapter.list(sentences: sentences, headings: prose.headings)
         )
     }
 
