@@ -54,10 +54,13 @@ enum EPUBTextExtractor {
         let base = packagePath.range(of: "/", options: .backwards)
             .map { String(packagePath[..<$0.upperBound]) } ?? ""
         var chapters: [[TextCleaner.Paragraph]] = []
+        var chapterPaths: [String] = []
         for href in spineDocuments(in: package) {
             autoreleasepool {
-                if let markup = archive.text(resolve(base: base, href: href)) {
-                    chapters.append(paragraphs(in: markup))
+                let path = resolve(base: base, href: href)
+                if let markup = archive.text(path) {
+                    chapters.append(paragraphs(in: markup, anchorPrefix: path + "#"))
+                    chapterPaths.append(path)
                 }
             }
         }
@@ -75,7 +78,8 @@ enum EPUBTextExtractor {
             sentences: sentences,
             paragraphEnds: prose.paragraphEnds,
             bookKey: try PDFTextExtractor.fileKey(for: url),
-            chapters: Chapter.list(sentences: sentences, headings: prose.headings)
+            chapters: chaptersFromContents(archive: archive, package: package, base: base, paths: chapterPaths, prose: prose)
+                ?? Chapter.list(sentences: sentences, headings: prose.headings)
         )
     }
 
@@ -93,6 +97,120 @@ enum EPUBTextExtractor {
             .filter { $0.name == "cipherreference" }
             .compactMap { $0.attribute("uri")?.lowercased() }
             .contains { uri in [".xhtml", ".html", ".htm", ".xml"].contains { uri.hasSuffix($0) } }
+    }
+
+    // MARK: - Table of contents
+
+    /// Chapters from the book's own table of contents: the EPUB 3 navigation
+    /// document, or the EPUB 2 `toc.ncx`. Each entry links to a chapter file,
+    /// often to an anchor inside it when several chapters share a file, and
+    /// is mapped to the sentence it starts at. Nil when the book has no
+    /// usable table of contents, so headings are used instead.
+    static func chaptersFromContents(
+        archive: ZipReader, package: String, base: String, paths: [String], prose: TextCleaner.Prose
+    ) -> [Chapter]? {
+        var navHref: String?
+        var ncxHref: String?
+        var ncxID: String?
+        var items: [String: String] = [:]
+        for tag in tags(in: package) where !tag.closing {
+            if tag.name == "item", let href = tag.attribute("href") {
+                if let id = tag.attribute("id") { items[id] = href }
+                if (tag.attribute("properties") ?? "").split(separator: " ").contains("nav") { navHref = href }
+                if tag.attribute("media-type") == "application/x-dtbncx+xml" { ncxHref = href }
+            }
+            if tag.name == "spine" { ncxID = tag.attribute("toc") }
+        }
+        if ncxHref == nil, let ncxID { ncxHref = items[ncxID] }
+
+        var links: [(title: String, href: String, from: String)] = []
+        if let navHref {
+            let path = resolve(base: base, href: navHref)
+            if let nav = archive.text(path) { links = navLinks(in: nav).map { ($0.title, $0.href, path) } }
+        }
+        if links.count < 2, let ncxHref {
+            let path = resolve(base: base, href: ncxHref)
+            if let ncx = archive.text(path) { links = ncxLinks(in: ncx).map { ($0.title, $0.href, path) } }
+        }
+        guard links.count >= 2 else { return nil }
+
+        let fileStarts = Dictionary(zip(paths, prose.chapterStarts), uniquingKeysWith: { first, _ in first })
+        var entries: [(title: String, start: Int)] = []
+        for link in links {
+            let folder = link.from.range(of: "/", options: .backwards).map { String(link.from[..<$0.upperBound]) } ?? ""
+            let path = resolve(base: folder, href: link.href)
+            let fragment = link.href.split(separator: "#", maxSplits: 1).dropFirst().first.map(String.init)
+            let start = fragment.flatMap { prose.anchors[path + "#" + ($0.removingPercentEncoding ?? $0)] }
+                ?? fileStarts[path]
+            guard let start, start < prose.sentences.count else { continue }
+            entries.append((link.title, start))
+        }
+        let chapters = Chapter.fromContents(entries, sentenceCount: prose.sentences.count)
+        return chapters.count >= 2 ? chapters : nil
+    }
+
+    /// The links of an EPUB 3 navigation document's table of contents
+    /// (`<nav epub:type="toc">`), in order, nested entries included.
+    static func navLinks(in nav: String) -> [(title: String, href: String)] {
+        var links: [(title: String, href: String)] = []
+        var navDepth = 0
+        var inContents = false
+        var href: String?
+        var label = ""
+        for piece in pieces(in: nav) {
+            switch piece {
+            case .tag(let tag):
+                if tag.name == "nav", !tag.selfClosing {
+                    if tag.closing {
+                        navDepth -= 1
+                        if navDepth == 0 { inContents = false }
+                    } else {
+                        navDepth += 1
+                        let kind = "\(tag.attribute("epub:type") ?? "") \(tag.attribute("role") ?? "")".lowercased()
+                        if navDepth == 1 { inContents = kind.contains("toc") }
+                    }
+                }
+                guard inContents, tag.name == "a" else { continue }
+                if tag.closing, let target = href {
+                    links.append((TextCleaner.collapseSpaces(label), target))
+                    href = nil
+                } else if !tag.closing {
+                    href = tag.attribute("href")
+                    label = ""
+                }
+            case .text(let text):
+                if href != nil { label += decodeEntities(text) + " " }
+            }
+        }
+        return links.filter { !$0.title.isEmpty }
+    }
+
+    /// The entries of an EPUB 2 `toc.ncx`, in order, nested ones included.
+    static func ncxLinks(in ncx: String) -> [(title: String, href: String)] {
+        var links: [(title: String, href: String)] = []
+        var label = ""
+        var inText = false
+        for piece in pieces(in: ncx) {
+            switch piece {
+            case .tag(let tag):
+                switch tag.name {
+                case "navpoint" where !tag.closing:
+                    label = ""
+                case "text":
+                    inText = !tag.closing && !tag.selfClosing
+                case "content" where !tag.closing:
+                    if let src = tag.attribute("src") {
+                        links.append((TextCleaner.collapseSpaces(label), src))
+                        label = ""
+                    }
+                default:
+                    break
+                }
+            case .text(let text):
+                if inText { label += decodeEntities(text) + " " }
+            }
+        }
+        return links.filter { !$0.title.isEmpty }
     }
 
     // MARK: - Paths
@@ -192,10 +310,12 @@ enum EPUBTextExtractor {
     }
 
     /// Splits one chapter's XHTML into paragraphs, marking real headings.
-    static func paragraphs(in markup: String) -> [TextCleaner.Paragraph] {
+    static func paragraphs(in markup: String, anchorPrefix: String = "") -> [TextCleaner.Paragraph] {
         var out: [TextCleaner.Paragraph] = []
         var current = ""
         var currentIsHeading = false
+        // Anchors met since the last paragraph: they lead to the next one.
+        var anchors: [String] = []
         var headingDepth = 0
         // While inside an element that is not read, its name and nesting depth.
         var skipping: (name: String, depth: Int)?
@@ -205,7 +325,8 @@ enum EPUBTextExtractor {
                 .replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\t", with: " ")
                 .replacingOccurrences(of: "\u{00A0}", with: " "))
             if !text.isEmpty {
-                out.append(TextCleaner.Paragraph(text: text, isHeading: currentIsHeading))
+                out.append(TextCleaner.Paragraph(text: text, isHeading: currentIsHeading, anchors: anchors))
+                anchors = []
             }
             current = ""
             currentIsHeading = false
@@ -236,6 +357,10 @@ enum EPUBTextExtractor {
                 }
                 if blocks.contains(tag.name) {
                     flush()
+                }
+                if !tag.closing, tag.attributes.contains("id=") || tag.attributes.contains("name="),
+                   let id = tag.attribute("id") ?? tag.attribute("name") {
+                    anchors.append(anchorPrefix + id)
                 }
                 if headings.contains(tag.name), !tag.selfClosing {
                     headingDepth = tag.closing ? max(0, headingDepth - 1) : headingDepth + 1

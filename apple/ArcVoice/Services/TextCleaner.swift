@@ -19,6 +19,12 @@ enum TextCleaner {
         var paragraphEnds: [Int] = []
         /// Sentences that are headings (chapter titles, part titles), ascending.
         var headings: [Int] = []
+        /// For an EPUB: the first sentence of each chapter file, in order.
+        var chapterStarts: [Int] = []
+        /// For an EPUB: the sentence each `id` anchor in the markup leads to.
+        var anchors: [String: Int] = [:]
+        /// For a PDF: the page each sentence starts on.
+        var pages: [Int] = []
 
         mutating func appendBlock(_ block: [String]) {
             guard !block.isEmpty else { return }
@@ -43,16 +49,19 @@ enum TextCleaner {
     /// A PDF does not say where paragraphs end, but typeset prose shows it:
     /// the last line of a paragraph ends a sentence and stops well short of
     /// the right margin. Lines are compared with the book's typical full line.
-    static func prose(fromPages pages: [String]) -> Prose {
+    /// - Parameter headingLines: for each page, the lines set in a heading's
+    ///   type, when the PDF says so. Those are the headings, and only those.
+    static func prose(fromPages pages: [String], headingLines: [Set<String>]? = nil) -> Prose {
         let pageLines = pages.map { lines(in: $0) }
-        let stripped = removeRepeatedLines(pageLines)
+        let stripped = removeRepeatedLines(pageLines, keeping: headingLines)
         var prose = Prose()
-        for block in joinIntoBlocks(stripped, fullLine: typicalLineLength(stripped)) {
+        for block in joinIntoBlocks(stripped, fullLine: typicalLineLength(stripped), headingLines: headingLines) {
             if block.isHeading {
                 prose.appendHeading(block.text)
             } else {
                 prose.appendBlock(splitSentences(block.text))
             }
+            prose.pages += Array(repeating: block.page, count: prose.sentences.count - prose.pages.count)
         }
         return prose
     }
@@ -72,6 +81,9 @@ enum TextCleaner {
         var text: String
         /// True when the markup itself says this is a heading (`<h1>` to `<h6>`).
         var isHeading: Bool
+        /// `id` anchors in the markup that lead here ("chapter3.xhtml#ch3"),
+        /// which a table of contents may link to.
+        var anchors: [String] = []
     }
 
     /// Paragraphs of each EPUB chapter, in reading order, to sentences.
@@ -92,12 +104,20 @@ enum TextCleaner {
 
     /// Like `sentences(fromChapters:)`, keeping paragraph ends.
     static func prose(fromChapters chapters: [[Paragraph]]) -> Prose {
+        // A dropped paragraph hands its anchors on to the next one kept.
         let cleaned: [[Paragraph]] = chapters.map { paragraphs in
-            paragraphs.compactMap { paragraph in
+            var carried: [String] = []
+            var kept: [Paragraph] = paragraphs.compactMap { paragraph in
                 let text = lines(in: paragraph.text).joined(separator: " ")
-                guard hasLettersOrDigits(text), !isContentsEntry(text) else { return nil }
-                return Paragraph(text: text, isHeading: paragraph.isHeading || isHeading(text))
+                guard hasLettersOrDigits(text), !isContentsEntry(text) else {
+                    carried += paragraph.anchors
+                    return nil
+                }
+                defer { carried = [] }
+                return Paragraph(
+                    text: text, isHeading: paragraph.isHeading || isHeading(text), anchors: carried + paragraph.anchors)
             }
+            return kept
         }
 
         func repeatKey(_ paragraph: Paragraph) -> String {
@@ -123,11 +143,18 @@ enum TextCleaner {
 
         var prose = Prose()
         for paragraphs in cleaned {
+            prose.chapterStarts.append(prose.sentences.count)
+            var carried: [String] = []
             for (index, paragraph) in paragraphs.enumerated() {
                 if chapterCount >= 4, inStampZone(index, paragraphs.count), paragraph.text.count <= 100,
                    (counts[repeatKey(paragraph)] ?? 0) >= minimum {
+                    carried += paragraph.anchors
                     continue
                 }
+                for anchor in carried + paragraph.anchors where prose.anchors[anchor] == nil {
+                    prose.anchors[anchor] = prose.sentences.count
+                }
+                carried = []
                 if paragraph.isHeading {
                     let letters = paragraph.text.filter { $0.isLetter }
                     let allCaps = letters.count >= 3 && letters.allSatisfy { $0.isUppercase }
@@ -270,7 +297,7 @@ enum TextCleaner {
     ///    zone on three or more pages, is a running header or footer. This is
     ///    what catches chapter titles repeated at the top of each page.
     /// 3. A bare page number in the edge zone.
-    static func removeRepeatedLines(_ pageLines: [[String]]) -> [[String]] {
+    static func removeRepeatedLines(_ pageLines: [[String]], keeping headingLines: [Set<String>]? = nil) -> [[String]] {
         let pageCount = pageLines.count
         var anywhere: [String: Int] = [:]
         var edge: [String: Int] = [:]
@@ -295,14 +322,73 @@ enum TextCleaner {
         let anywhereMinimum = max(4, Int((Double(pageCount) * 0.4).rounded(.up)))
         let edgeMinimum = 3
 
+        // "Chapter 6" and "Chapter 7" share a fingerprint and both sit at the
+        // top of a page, so they look like a running header. But a header
+        // repeats the same words page after page, while each chapter heading
+        // is different. A line that opens with a chapter word is kept the
+        // first time its exact words appear; only the repeats go (a book that
+        // prints the chapter name atop every page keeps it on the first).
+        var headingsSeen = Set<String>()
+
+        // Page numbers rise with the page; find the offset between the two
+        // (front matter shifts it), so a number that does not fit is a
+        // chapter number ("23" heading a chapter), not a page number.
+        var offsets: [Int: Int] = [:]
+        for (pageIndex, lines) in pageLines.enumerated() {
+            let edges = lines.prefix(2) + lines.suffix(2)
+            for line in Set(edges) {
+                if let number = Int(line.trimmingCharacters(in: .whitespaces)) {
+                    offsets[number - pageIndex, default: 0] += 1
+                }
+            }
+        }
+        let pageOffset = offsets.filter { $0.value >= 3 }.max { $0.value < $1.value }?.key
+        let pageLengths = pageLines.map(\.count).filter { $0 > 0 }.sorted()
+        let typicalPage = pageLengths.isEmpty ? 0 : pageLengths[pageLengths.count / 2]
+
+        var pageIndex = -1
         return pageLines.map { lines in
+            pageIndex += 1
+            // A chapter opener: the previous page stopped short.
+            let opener = pageIndex > 0 && typicalPage >= 10
+                && pageLines[pageIndex - 1].count * 100 < typicalPage * 90
             let count = lines.count
             var kept: [String] = []
             kept.reserveCapacity(count)
+            // A printed table of contents: a "Contents" title, or a page that
+            // is mostly "Chapter ..." lines. Its entries are neither chapters
+            // nor anything to read aloud.
+            let isContentsPage = lines.contains { ["contents", "table of contents"].contains($0.lowercased()) }
+                || lines.filter(startsWithHeadingWord).count >= 5
             for (index, line) in lines.enumerated() {
                 // Ornaments like "* * *" have nothing to say out loud.
                 guard hasLettersOrDigits(line), !isContentsEntry(line) else { continue }
+                if isContentsPage, startsWithHeadingWord(line) { continue }
+                // Set in a heading's type: a heading, however often its
+                // words recur (a narrator's name heads many chapters).
+                if let headingLines, pageIndex < headingLines.count, headingLines[pageIndex].contains(line) {
+                    kept.append(line)
+                    continue
+                }
                 let isEdge = index < 2 || index >= count - 2
+                // At the top of a chapter opener, a number that is not the
+                // page's own is the chapter's: "23", "XXIII". Checked first,
+                // since bare numbers look like the page numbers on every page.
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if opener, index < 3, isPageNumber(line),
+                   Int(trimmed).map({ pageOffset == nil || $0 - pageIndex != pageOffset })
+                    ?? (isRomanNumeral(trimmed) || trimmed == "I") {
+                    kept.append(line)
+                    continue
+                }
+                if startsWithHeadingWord(line), line.count <= 60, !endsLikeSentence(line) {
+                    let exact = line.lowercased()
+                    if !headingsSeen.contains(exact) {
+                        headingsSeen.insert(exact)
+                        kept.append(line)
+                        continue
+                    }
+                }
                 if pageCount >= 4, line.count <= 100 {
                     let key = fingerprint(line)
                     if (anywhere[key] ?? 0) >= anywhereMinimum { continue }
@@ -326,6 +412,13 @@ enum TextCleaner {
         "introduction", "foreword", "preface", "afterword",
     ]
 
+    /// True for "Chapter 6", "PART TWO", "Prologue": a line that opens with
+    /// a word that names a part of a book.
+    static func startsWithHeadingWord(_ line: String) -> Bool {
+        guard let first = line.split(separator: " ").first else { return false }
+        return headingWords.contains(first.lowercased().trimmingCharacters(in: .punctuationCharacters))
+    }
+
     /// Chapter headings have no closing punctuation, so left alone they run
     /// straight into the first sentence of the chapter. Spotting them lets the
     /// reader give them their own beat.
@@ -345,9 +438,11 @@ enum TextCleaner {
     struct Block: Equatable {
         var text: String
         var isHeading: Bool
+        /// The page the block starts on.
+        var page: Int = 0
     }
 
-    static func joinIntoBlocks(_ pages: [[String]], fullLine: Int? = nil) -> [Block] {
+    static func joinIntoBlocks(_ pages: [[String]], fullLine: Int? = nil, headingLines: [Set<String>]? = nil) -> [Block] {
         var blocks: [Block] = []
         var current = ""
         func endsParagraph(_ line: String) -> Bool {
@@ -355,32 +450,58 @@ enum TextCleaner {
             return endsLikeSentence(line) && line.count * 100 < fullLine * 78
         }
 
+        var currentPage = 0
         func flush() {
             let trimmed = current.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty { blocks.append(Block(text: trimmed, isHeading: false)) }
+            if !trimmed.isEmpty { blocks.append(Block(text: trimmed, isHeading: false, page: currentPage)) }
             current = ""
         }
 
-        /// A chapter page opens with short title lines ("Night stories", then
-        /// the narrator, "Rhea") above the first paragraph. Only at the top of
-        /// a page, after a paragraph that has ended, and only short lines
-        /// that start with a capital and do not end a sentence.
-        func isPageTopHeading(_ line: String, position: Int) -> Bool {
-            guard let fullLine, position < 5, current.isEmpty, line.count * 100 < fullLine * 50,
-                  !endsLikeSentence(line), let first = line.first, first.isUppercase || first.isNumber
+        // A chapter ends partway down a page and the next one starts on a
+        // fresh page, so a page after a short one is a chapter opener.
+        let pageLengths = pages.map(\.count).filter { $0 > 0 }.sorted()
+        let typicalPage = pageLengths.isEmpty ? 0 : pageLengths[pageLengths.count / 2]
+
+        /// A chapter page opens with title lines ("Night stories", then the
+        /// narrator, "Rhea") above the first paragraph. Only at the top of a
+        /// page, after a paragraph that has ended, starting with a capital.
+        /// Short lines that do not end a sentence anywhere; on a chapter
+        /// opener also longer titles, and titles that end with a full stop
+        /// ("Loomings.").
+        func isPageTopHeading(_ line: String, position: Int, opener: Bool) -> Bool {
+            guard let fullLine, position < (opener ? 6 : 5), current.isEmpty, let first = line.first,
+                  first.isUppercase || first.isNumber, hasLettersOrDigits(line)
             else { return false }
-            return hasLettersOrDigits(line)
+            if line.count * 100 < fullLine * 50, !endsLikeSentence(line) { return true }
+            guard opener, line.count * 100 < fullLine * 80 else { return false }
+            let words = line.split(separator: " ").count
+            return !endsLikeSentence(line) || (line.hasSuffix(".") && words <= 8 && !line.hasSuffix("..."))
         }
 
-        for lines in pages {
+        for (pageIndex, lines) in pages.enumerated() {
             var bodyStarted = false
+            let opener = pageIndex > 0 && typicalPage >= 10 && pages[pageIndex - 1].count * 100 < typicalPage * 90
             for (position, line) in lines.enumerated() {
-                if isHeading(line) || (!bodyStarted && isPageTopHeading(line, position: position)) {
+                let isHeadingLine: Bool
+                if let headingLines {
+                    // The type says which lines are headings.
+                    isHeadingLine = pageIndex < headingLines.count && headingLines[pageIndex].contains(line)
+                    // A title set over two lines: "Mistakes and double-" "checks".
+                    if isHeadingLine, current.isEmpty, var last = blocks.last, last.isHeading, last.page == pageIndex,
+                       last.text.hasSuffix("-") || (line.first?.isLowercase ?? false) {
+                        last.text += last.text.hasSuffix("-") ? line : " " + line
+                        blocks[blocks.count - 1] = last
+                        continue
+                    }
+                } else {
+                    isHeadingLine = isHeading(line) || (!bodyStarted && isPageTopHeading(line, position: position, opener: opener))
+                }
+                if isHeadingLine {
                     flush()
                     // "CHAPTER ONE" reads more naturally as "Chapter One".
                     let letters = line.filter { $0.isLetter }
                     let allCaps = !letters.isEmpty && letters.allSatisfy { $0.isUppercase }
-                    blocks.append(Block(text: allCaps ? titleCase(line) : line, isHeading: true))
+                    blocks.append(Block(text: allCaps ? titleCase(line) : line, isHeading: true, page: pageIndex))
                     continue
                 }
                 // The rest of a heading broken over two lines: "Mistakes and
@@ -395,6 +516,7 @@ enum TextCleaner {
                 bodyStarted = true
                 if current.isEmpty {
                     current = line
+                    currentPage = pageIndex
                 } else if let last = current.last, last == "-" || last == "\u{2010}",
                           let first = line.first, first.isLowercase,
                           let before = current.dropLast().last, before.isLetter {

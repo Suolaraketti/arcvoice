@@ -668,10 +668,8 @@ enum BookFile {
                           && !(index > 0 && lines[index - 1].trimmingCharacters(in: .whitespaces).hasSuffix("-"))
                           && (trimmed.count >= 30 || TextCleaner.endsLikeSentence(trimmed) || next.count >= 30)
                   }),
-                  lines[1..<line].allSatisfy({ heading in
-                      let trimmed = heading.trimmingCharacters(in: .whitespaces)
-                      return trimmed.count < 40 && !TextCleaner.endsLikeSentence(trimmed)
-                  })
+                  // Above it, only short title lines ("Truth?" may end in a question mark).
+                  lines[1..<line].allSatisfy({ $0.trimmingCharacters(in: .whitespaces).count < 40 })
             else { return nil }
             return (index, line)
         }
@@ -702,19 +700,43 @@ enum BookFile {
         for opening in openings {
             var lines = restored[opening.page].components(separatedBy: "\n")
             let line = lines[opening.line].trimmingCharacters(in: .whitespaces)
-            if let letter = dropCapLetter(for: line, counts: counts, uses: uses) {
-                lines[opening.line] = letter
-                restored[opening.page] = lines.joined(separator: "\n")
+            // Often the big letter is there after all, as text that the PDF
+            // files further down the page ("M" a few lines on). Then it is
+            // the letter, and only "I throw" against "It was" is worked out.
+            if let found = lines.indices.dropFirst(opening.line + 1).first(where: { isDropCapLetter(lines[$0]) }) {
+                let cap = lines[found].trimmingCharacters(in: .whitespaces)
+                let letter = cap.last!
+                let quote = String(cap.dropLast())
+                // With nothing to go on, "I" and "A" stand alone before a word
+                // the book uses ("I wake up"), and join anything else.
+                let firstWord = String(line.prefix { $0.isLetter || $0 == "'" || $0 == "\u{2019}" })
+                let standsAlone = (letter == "I" || letter == "A") && (counts[firstWord] ?? 0) > 0
+                let joined = dropCapLetter(for: line, counts: counts, uses: uses, only: letter)
+                    ?? (standsAlone ? "\(letter) \(line)" : String(letter) + line)
+                lines[opening.line] = quote + joined
+                lines.remove(at: found)
+            } else if let guessed = dropCapLetter(for: line, counts: counts, uses: uses) {
+                lines[opening.line] = guessed
             }
+            restored[opening.page] = lines.joined(separator: "\n")
         }
         return restored
+    }
+
+    /// A line that is a lone capital, perhaps after an opening quote: "M", "“T".
+    static func isDropCapLetter(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let last = trimmed.last, last.isUppercase, last.isLetter, trimmed.count <= 2 else { return false }
+        return trimmed.count == 1 || "\u{201C}\"\u{2018}'".contains(trimmed.first!)
     }
 
     /// The best start for an opening that lost its first letter: a capital
     /// joined to it, or "I " or "A " before it. Scored by how often the book
     /// uses the result with the words that follow it ("What the fuck" beats
     /// "That the fuck"), then the word alone, a capitalized one counting most.
-    static func dropCapLetter(for line: String, counts: [String: Int], uses: ([String]) -> Int) -> String? {
+    static func dropCapLetter(
+        for line: String, counts: [String: Int], uses: ([String]) -> Int, only: Character? = nil
+    ) -> String? {
         let fragment = String(line.prefix { $0.isLetter || $0 == "'" || $0 == "\u{2019}" })
         guard !fragment.isEmpty else { return nil }
         let tokens = line.split(whereSeparator: \.isWhitespace).map(String.init)
@@ -733,7 +755,7 @@ enum BookFile {
             "Is", "Are", "Was", "Were", "Do", "Does", "Did", "Can", "Could", "Will", "Would", "Should", "Have",
             "Has", "What", "Where", "When", "Why", "Who", "How", "Which",
         ]
-        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
+        for letter in only.map({ String($0) }) ?? "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
             let word = String(letter) + fragment
             let words = [String(letter) + tokens[0]] + tokens.dropFirst()
             var score = phraseScore(words) + (counts[word] ?? 0) * 3 + (counts[word.lowercased()] ?? 0)
@@ -742,7 +764,7 @@ enum BookFile {
         }
         // "I throw": a word of its own. Not for a single letter, so "It was"
         // is never "I t was".
-        for pronoun in ["I", "A"] where fragment.count > 1 {
+        for pronoun in ["I", "A"] where fragment.count > 1 && (only == nil || only.map(String.init) == pronoun) {
             consider(pronoun + " " + line, phraseScore([pronoun] + tokens))
         }
         return best?.text

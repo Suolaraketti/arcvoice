@@ -13,12 +13,17 @@ struct Chapter: Codable, Hashable, Sendable {
     /// first heading (title page, copyright) is "Opening pages". A book with
     /// fewer than two headings, or so many that they can't be chapters, has
     /// no chapter list.
-    static func list(sentences: [String], headings: [Int]) -> [Chapter] {
+    /// - Parameter pages: for a PDF, each sentence's page, so headings on
+    ///   different pages ("Playlist" and then "Prologue") stay apart.
+    static func list(sentences: [String], headings: [Int], pages: [Int]? = nil) -> [Chapter] {
         var chapters: [Chapter] = []
         var previous: Int?
         for index in headings where sentences.indices.contains(index) {
             let text = displayTitle(sentences[index].trimmingCharacters(in: .whitespaces))
-            if let previous, index == previous + 1, var last = chapters.popLast() {
+            let samePage = pages.map { pages in
+                previous.map { pages.indices.contains($0) && pages.indices.contains(index) && pages[$0] == pages[index] } ?? false
+            } ?? true
+            if let previous, index == previous + 1, samePage, var last = chapters.popLast() {
                 if last.title.count < 80 { last.title += " \u{00B7} " + text }
                 chapters.append(last)
             } else {
@@ -27,6 +32,38 @@ struct Chapter: Codable, Hashable, Sendable {
             previous = index
         }
         guard chapters.count >= 2, chapters.count * 8 <= sentences.count else { return [] }
+        // A chapter headed only by its number reads "Chapter 23".
+        // ("Chapter 23 · Rhea" when a narrator's name follows.)
+        for index in chapters.indices {
+            let first = chapters[index].title.components(separatedBy: " \u{00B7} ")[0]
+            if Int(first) != nil || ((TextCleaner.isRomanNumeral(first) || first == "I") && first.count <= 7) {
+                chapters[index].title = "Chapter " + chapters[index].title
+            }
+        }
+        if let first = chapters.first, first.start > 0 {
+            chapters.insert(Chapter(title: "Opening pages", start: 0), at: 0)
+        }
+        return chapters
+    }
+
+    /// Chapters from a book's own table of contents (or a PDF's bookmarks):
+    /// titles with the sentence each starts at, in the book's order.
+    /// Entries that land on the same sentence are one chapter ("Part One ·
+    /// Chapter 1"); an entry that would go backwards is left out.
+    static func fromContents(_ entries: [(title: String, start: Int)], sentenceCount: Int) -> [Chapter] {
+        var chapters: [Chapter] = []
+        for entry in entries {
+            let title = displayTitle(TextCleaner.collapseSpaces(entry.title))
+            guard !title.isEmpty, entry.start < sentenceCount else { continue }
+            if var last = chapters.last, entry.start <= last.start {
+                if entry.start == last.start, !last.title.contains(title), last.title.count < 80 {
+                    last.title += " \u{00B7} " + title
+                    chapters[chapters.count - 1] = last
+                }
+                continue
+            }
+            chapters.append(Chapter(title: title, start: entry.start))
+        }
         if let first = chapters.first, first.start > 0 {
             chapters.insert(Chapter(title: "Opening pages", start: 0), at: 0)
         }
