@@ -12,7 +12,7 @@
 //! The window sends `Command`s in and reads a `Snapshot` out.
 
 use arcvoice_core::pacing::{self, Break};
-use arcvoice_core::narrator::is_classic_voice;
+use arcvoice_core::narrator::is_expressive_voice;
 use arcvoice_core::{models, Book, Kokoro, Library, Narrator, Phonon, VoiceChoice, SAMPLE_RATE};
 use rodio::buffer::SamplesBuffer;
 use rodio::{OutputStream, OutputStreamBuilder, Sink};
@@ -158,28 +158,27 @@ fn voice_thread(
     };
     let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(1, 4));
 
-    // Phonon first: the default voice, and a small download.
-    if !models::is_phonon_downloaded(&models_dir) {
+    // Kokoro first: the default voices.
+    if !models::is_downloaded(&models_dir) {
         report(VoiceStatus::Downloading(0.0), Vec::new());
-        if let Err(error) = models::ensure_phonon_downloaded(&models_dir, download_progress()) {
+        if let Err(error) = models::ensure_downloaded(&models_dir, download_progress()) {
             report(VoiceStatus::Failed(format!("The voice could not be downloaded: {error:#}")), Vec::new());
             return;
         }
     }
     report(VoiceStatus::Loading, Vec::new());
-    let phonon = match Phonon::load(&models::phonon_dir(&models_dir), Some(threads)) {
-        Ok(phonon) => Some(phonon),
+    let options = arcvoice_core::LoadOptions { threads: Some(threads), ..Default::default() };
+    let kokoro = match Kokoro::load_with(&models::model_path(&models_dir), &models::voices_path(&models_dir), &options) {
+        Ok(kokoro) => Some(kokoro),
         Err(error) => {
             report(VoiceStatus::Failed(format!("The voice could not be loaded: {error:#}")), Vec::new());
             return;
         }
     };
-    // Kokoro's classic voices too, when an earlier version downloaded them.
-    let load_kokoro = || {
-        let options = arcvoice_core::LoadOptions { threads: Some(threads), ..Default::default() };
-        Kokoro::load_with(&models::model_path(&models_dir), &models::voices_path(&models_dir), &options)
-    };
-    let kokoro = if models::is_downloaded(&models_dir) { load_kokoro().ok() } else { None };
+    std::thread::spawn(arcvoice_core::pronounce::warm_up);
+    // Phonon's expressive voices too, when they were downloaded before.
+    let load_phonon = || Phonon::load(&models::phonon_dir(&models_dir), Some(threads));
+    let phonon = if models::is_phonon_downloaded(&models_dir) { load_phonon().ok() } else { None };
     let mut narrator = Narrator::new(phonon, kokoro);
     // The first render is slower than the rest. Take that hit now.
     let _ = narrator.synthesize("Ready.", arcvoice_core::narrator::DEFAULT_VOICE, 1.0);
@@ -190,18 +189,18 @@ fn voice_thread(
         if request.generation != generation.load(Ordering::SeqCst) {
             continue;
         }
-        // A classic voice was chosen and Kokoro is not here yet: fetch it.
-        if is_classic_voice(&request.voice) && !narrator.has_kokoro() {
+        // An expressive voice was chosen and Phonon is not here yet: fetch it.
+        if is_expressive_voice(&request.voice) && !narrator.has_phonon() {
             report(VoiceStatus::Downloading(0.0), narrator.voices());
-            let loaded = models::ensure_downloaded(&models_dir, download_progress())
+            let loaded = models::ensure_phonon_downloaded(&models_dir, download_progress())
                 .and_then(|()| {
                     report(VoiceStatus::Loading, narrator.voices());
-                    load_kokoro()
+                    load_phonon()
                 });
             match loaded {
-                Ok(kokoro) => narrator.set_kokoro(kokoro),
+                Ok(phonon) => narrator.set_phonon(phonon),
                 Err(error) => {
-                    let message = format!("The classic voices could not be downloaded: {error:#}");
+                    let message = format!("The expressive voices could not be downloaded: {error:#}");
                     report(VoiceStatus::Failed(message), narrator.voices());
                     continue;
                 }

@@ -20,10 +20,11 @@ enum SpeechEngineError: LocalizedError {
 /// renders it, and adds the pause that should follow it. One engine
 /// everywhere means a fix reaches every platform at once.
 ///
-/// Two families of voices live in it. Phonon's are the default: expressive,
-/// very fast, and a small download (about 68 MB). Kokoro's "classic" voices
-/// are steadier and a large download (about 350 MB), fetched only when asked
-/// for. Devices that already have Kokoro from an earlier version keep it.
+/// Two families of voices live in it. Kokoro's are the default: in listening
+/// tests they read fiction the most naturally and accurately (about 350 MB).
+/// Phonon's "expressive" voices are an optional extra (about 70 MB), fetched
+/// only when asked for. Devices that already have Phonon from an earlier
+/// version keep it.
 ///
 /// An actor because the engine is not thread safe and each render blocks for
 /// a moment; this keeps every call in a single queue, off the main thread.
@@ -31,14 +32,14 @@ actor SpeechEngine {
 
     /// The engine always produces 24 kHz mono audio.
     static let sampleRate: Double = 24_000
-    static let defaultVoice = "phonon/Harper"
+    static let defaultVoice = "af_heart"
 
     struct Voice: Hashable, Sendable {
         let id: String
         /// "Harper (US, female)".
         let label: String
-        /// One of Kokoro's classic voices.
-        let classic: Bool
+        /// One of Phonon's optional expressive voices.
+        let expressive: Bool
     }
 
     private var engine: OpaquePointer?
@@ -77,26 +78,21 @@ actor SpeechEngine {
     private static func phononDirectory() throws -> URL { try directory("Phonon") }
     private static func kokoroDirectory() throws -> URL { try directory("KokoroONNX") }
 
-    /// Loads the voices, downloading Phonon the first time. Returns them,
+    /// Loads the voices, downloading Kokoro the first time. Returns them,
     /// best first.
     func load(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [Voice] {
         if engine != nil { return voices }
 
-        let phonon = try Self.phononDirectory()
-        try await Self.download(Self.files(arcvoice_phonon_downloads()), into: phonon, progress: progress)
+        let kokoro = try Self.kokoroDirectory()
+        try await Self.download(Self.files(arcvoice_kokoro_downloads()), into: kokoro, progress: progress)
         progress(1, "Loading the voice")
 
-        let kokoro = try Self.kokoroDirectory()
-        let kokoroReady = Self.isDownloaded(Self.files(arcvoice_kokoro_downloads()), in: kokoro)
+        let phonon = try Self.phononDirectory()
+        let phononReady = Self.isDownloaded(Self.files(arcvoice_phonon_downloads()), in: phonon)
         var error: UnsafeMutablePointer<CChar>?
-        let opened: OpaquePointer?
-        if kokoroReady {
-            opened = arcvoice_engine_open(
-                phonon.path, kokoro.appendingPathComponent("kokoro-v1.0.onnx").path,
-                kokoro.appendingPathComponent("voices-v1.0.bin").path, Self.threads, &error)
-        } else {
-            opened = arcvoice_engine_open(phonon.path, nil, nil, Self.threads, &error)
-        }
+        let opened = arcvoice_engine_open(
+            phononReady ? phonon.path : nil, kokoro.appendingPathComponent("kokoro-v1.0.onnx").path,
+            kokoro.appendingPathComponent("voices-v1.0.bin").path, Self.threads, &error)
         guard let opened else {
             throw SpeechEngineError.engine(Self.take(error) ?? "The voice could not be loaded.")
         }
@@ -107,24 +103,21 @@ actor SpeechEngine {
         return voices
     }
 
-    /// True once Kokoro's classic voices are on this device.
-    func hasClassicVoices() -> Bool {
-        voices.contains { $0.classic }
+    /// True once Phonon's expressive voices are on this device.
+    func hasExpressiveVoices() -> Bool {
+        voices.contains { $0.expressive }
     }
 
-    /// Downloads Kokoro's classic voices (about 350 MB) and adds them.
-    func addClassicVoices(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [Voice] {
+    /// Downloads Phonon's expressive voices (about 70 MB) and adds them.
+    func addExpressiveVoices(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [Voice] {
         guard let engine else { throw SpeechEngineError.notLoaded }
-        if hasClassicVoices() { return voices }
-        let kokoro = try Self.kokoroDirectory()
-        try await Self.download(Self.files(arcvoice_kokoro_downloads()), into: kokoro, progress: progress)
-        progress(1, "Loading the classic voices")
+        if hasExpressiveVoices() { return voices }
+        let phonon = try Self.phononDirectory()
+        try await Self.download(Self.files(arcvoice_phonon_downloads()), into: phonon, progress: progress)
+        progress(1, "Loading the expressive voices")
         var error: UnsafeMutablePointer<CChar>?
-        guard arcvoice_engine_add_kokoro(
-            engine, kokoro.appendingPathComponent("kokoro-v1.0.onnx").path,
-            kokoro.appendingPathComponent("voices-v1.0.bin").path, Self.threads, &error)
-        else {
-            throw SpeechEngineError.engine(Self.take(error) ?? "The classic voices could not be loaded.")
+        guard arcvoice_engine_add_phonon(engine, phonon.path, Self.threads, &error) else {
+            throw SpeechEngineError.engine(Self.take(error) ?? "The expressive voices could not be loaded.")
         }
         voices = readVoices()
         return voices
@@ -137,7 +130,7 @@ actor SpeechEngine {
             .compactMap { line in
                 let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
                 guard fields.count == 3 else { return nil }
-                return Voice(id: String(fields[0]), label: String(fields[1]), classic: fields[2] == "1")
+                return Voice(id: String(fields[0]), label: String(fields[1]), expressive: fields[2] == "1")
             }
     }
 
@@ -174,7 +167,7 @@ actor SpeechEngine {
         return Array(UnsafeBufferPointer(start: samples, count: count))
     }
 
-    /// The phonemes a sentence is spoken with by the classic voices, for
+    /// The phonemes a sentence is spoken with by the Kokoro voices, for
     /// looking into a word they say oddly.
     func phonemes(for text: String) -> String? {
         guard let engine else { return nil }

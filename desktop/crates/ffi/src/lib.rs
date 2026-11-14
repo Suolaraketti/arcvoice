@@ -93,6 +93,25 @@ pub unsafe extern "C" fn arcvoice_engine_open(
 /// `engine` is a live engine, the paths are valid strings, and `error` is
 /// null or writable.
 #[no_mangle]
+pub unsafe extern "C" fn arcvoice_engine_add_phonon(
+    engine: *mut ArcVoiceEngine,
+    phonon_dir: *const c_char,
+    threads: u32,
+    error: *mut *mut c_char,
+) -> bool {
+    guarded(error, false, || {
+        let engine = unsafe { engine.as_mut() }.ok_or("the voice is not loaded")?;
+        let dir = unsafe { borrowed(phonon_dir) }.ok_or("the voice folder is missing")?;
+        let phonon = Phonon::load(Path::new(dir), (threads > 0).then_some(threads as usize))
+            .map_err(|e| format!("{e:#}"))?;
+        engine.narrator.set_phonon(phonon);
+        Ok(true)
+    })
+}
+
+/// # Safety
+/// `engine` must come from `arcvoice_engine_open`; the paths are C strings.
+#[no_mangle]
 pub unsafe extern "C" fn arcvoice_engine_add_kokoro(
     engine: *mut ArcVoiceEngine,
     kokoro_model: *const c_char,
@@ -128,7 +147,7 @@ pub unsafe extern "C" fn arcvoice_engine_voices(engine: *mut ArcVoiceEngine) -> 
         .narrator
         .voices()
         .iter()
-        .map(|voice| format!("{}\t{}\t{}", voice.id, voice.label, u8::from(voice.classic)))
+        .map(|voice| format!("{}\t{}\t{}", voice.id, voice.label, u8::from(voice.expressive)))
         .collect();
     string_out(&lines.join("\n"))
 }

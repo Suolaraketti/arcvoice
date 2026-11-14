@@ -175,13 +175,13 @@ struct ReaderView: View {
             if !model.voices.isEmpty {
                 Picker("Voice", selection: $model.selectedVoice) {
                     Section("Voices") {
-                        ForEach(model.voices.filter { !$0.classic }, id: \.id) { voice in
+                        ForEach(model.voices.filter { !$0.expressive }, id: \.id) { voice in
                             Text(voice.label).tag(voice.id)
                         }
                     }
-                    if model.hasClassicVoices {
-                        Section("Classic voices") {
-                            ForEach(model.voices.filter(\.classic), id: \.id) { voice in
+                    if model.hasExpressiveVoices {
+                        Section("Expressive voices") {
+                            ForEach(model.voices.filter(\.expressive), id: \.id) { voice in
                                 Text(voice.label).tag(voice.id)
                             }
                         }
@@ -189,15 +189,15 @@ struct ReaderView: View {
                 }
                 .pickerStyle(.menu)
 
-                if let progress = model.classicDownloadProgress {
-                    Text("Downloading classic voices, \(Int((progress * 100).rounded()))%")
-                } else if !model.hasClassicVoices {
+                if let progress = model.expressiveDownloadProgress {
+                    Text("Downloading expressive voices, \(Int((progress * 100).rounded()))%")
+                } else if !model.hasExpressiveVoices {
                     Button {
-                        Task { await model.downloadClassicVoices() }
+                        Task { await model.downloadExpressiveVoices() }
                     } label: {
                         Label(
-                            model.classicDownloadError == nil
-                                ? "Get classic voices (350 MB)" : "Retry classic voices download",
+                            model.expressiveDownloadError == nil
+                                ? "Get expressive voices (70 MB)" : "Retry expressive voices download",
                             systemImage: "arrow.down.circle")
                     }
                 }

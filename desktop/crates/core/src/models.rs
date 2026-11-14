@@ -1,10 +1,10 @@
 //! Downloads the voices the first time they are needed.
 //!
-//! Phonon (the default voice, about 68 MB) comes from Gradium's Hugging Face
-//! repositories, pinned to exact revisions so an upstream change never alters
-//! the voice without a deliberate update. Kokoro (the classic voices, about
-//! 350 MB) comes from the kokoro-onnx release, only when a classic voice is
-//! chosen.
+//! Kokoro (the default voices, about 350 MB) comes from the kokoro-onnx
+//! release. Phonon (the optional expressive voices, about 68 MB) comes from
+//! Gradium's Hugging Face repositories, pinned to exact revisions so an
+//! upstream change never alters the voice without a deliberate update, and
+//! only when an expressive voice is chosen.
 //!
 //! The files come from the kokoro-onnx project's GitHub release. The full
 //! precision model is used on purpose: it is about 325 MB, but on a desktop

@@ -156,7 +156,7 @@ private struct VoiceStatusBanner: View {
                 Text(message)
                     .font(.footnote.weight(.medium))
                 ProgressView(value: min(1, max(0, progress)))
-                Text("The voice downloads once, about 70 MB. After that it works offline.")
+                Text("The voice downloads once, about 350 MB. After that it works offline.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

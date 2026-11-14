@@ -323,21 +323,21 @@ impl App {
                         .map_or_else(|| "Choose a voice".to_string(), |voice| voice.label.clone());
                     let mut chosen: Option<String> = None;
                     egui::ComboBox::from_id_salt("voice").selected_text(selected).width(210.0).show_ui(ui, |ui| {
-                        for voice in snapshot.voices.iter().filter(|voice| !voice.classic) {
+                        for voice in snapshot.voices.iter().filter(|voice| !voice.expressive) {
                             if ui.selectable_label(self.voice == voice.id, &voice.label).clicked() {
                                 chosen = Some(voice.id.clone());
                             }
                         }
                         ui.separator();
-                        let classics: Vec<_> = snapshot.voices.iter().filter(|voice| voice.classic).collect();
-                        if classics.is_empty() {
-                            // Picking a classic voice downloads Kokoro (about 350 MB).
-                            if ui.selectable_label(false, "Classic voices (download 350 MB)").clicked() {
-                                chosen = Some("af_heart".to_string());
+                        let expressive: Vec<_> = snapshot.voices.iter().filter(|voice| voice.expressive).collect();
+                        if expressive.is_empty() {
+                            // Picking an expressive voice downloads Phonon (about 70 MB).
+                            if ui.selectable_label(false, "Expressive voices (download 70 MB)").clicked() {
+                                chosen = Some(arcvoice_core::narrator::PHONON_PREFIX.to_string() + "Harper");
                             }
                         } else {
-                            ui.small("Classic voices");
-                            for voice in classics {
+                            ui.small("Expressive voices");
+                            for voice in expressive {
                                 if ui.selectable_label(self.voice == voice.id, &voice.label).clicked() {
                                     chosen = Some(voice.id.clone());
                                 }

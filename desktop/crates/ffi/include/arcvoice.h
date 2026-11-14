@@ -1,7 +1,7 @@
 // The ArcVoice engine, as used by the iPhone and Mac apps.
 //
 // This is the same Rust engine the Windows app uses: text preparation, the
-// voices (Phonon, the expressive default, and Kokoro's classic voices),
+// voices (Kokoro, the default, and Phonon's optional expressive voices),
 // pronunciation and sentence pacing. One engine means a fix lands on every
 // platform at once.
 //
@@ -28,14 +28,17 @@ uint32_t arcvoice_sample_rate(void);
 ArcVoiceEngine *arcvoice_engine_open(const char *phonon_dir, const char *kokoro_model, const char *kokoro_voices,
                                      uint32_t threads, char **error);
 
-/// Adds Kokoro's classic voices to an open engine, once downloaded.
+/// Adds Phonon's expressive voices to an open engine, once downloaded.
+bool arcvoice_engine_add_phonon(ArcVoiceEngine *engine, const char *phonon_dir, uint32_t threads, char **error);
+
+/// Adds Kokoro's voices to an open engine, once downloaded.
 bool arcvoice_engine_add_kokoro(ArcVoiceEngine *engine, const char *kokoro_model, const char *kokoro_voices,
                                 uint32_t threads, char **error);
 
 void arcvoice_engine_close(ArcVoiceEngine *engine);
 
 /// The voices, best first, one per line: id, a tab, the label to show
-/// ("Harper (US, female)"), a tab, and 1 for a classic (Kokoro) voice or 0.
+/// ("Harper (US, female)"), a tab, and 1 for an expressive (Phonon) voice or 0.
 char *arcvoice_engine_voices(ArcVoiceEngine *engine);
 
 /// What follows a rendered piece of text, which sets the pause after it.

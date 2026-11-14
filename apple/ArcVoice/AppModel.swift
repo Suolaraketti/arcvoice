@@ -22,10 +22,10 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var voiceState: VoiceState = .notLoaded
     @Published private(set) var voices: [SpeechEngine.Voice] = []
-    /// Progress of the optional classic (Kokoro) voices download, 0 to 1,
+    /// Progress of the optional expressive (Phonon) voices download, 0 to 1,
     /// while it runs.
-    @Published private(set) var classicDownloadProgress: Double?
-    @Published var classicDownloadError: String?
+    @Published private(set) var expressiveDownloadProgress: Double?
+    @Published var expressiveDownloadError: String?
     @Published private(set) var isImporting = false
     @Published var importError: String?
     /// The book whose reader screen is showing. Setting it navigates.
@@ -50,6 +50,8 @@ final class AppModel: ObservableObject {
     private enum Keys {
         static let voice = "selectedVoice"
         static let rate = "playbackRate"
+        /// Set once the saved voice has been moved back to Kokoro.
+        static let kokoroDefault = "voiceDefaultIsKokoro"
     }
 
     private var loadTask: Task<Void, Never>?
@@ -62,7 +64,14 @@ final class AppModel: ObservableObject {
         self.library = library
         self.player = player
 
-        let savedVoice = UserDefaults.standard.string(forKey: Keys.voice) ?? SpeechEngine.defaultVoice
+        var savedVoice = UserDefaults.standard.string(forKey: Keys.voice) ?? SpeechEngine.defaultVoice
+        // One build defaulted to Phonon's Harper. Anyone still on that
+        // default, rather than a voice they picked, goes back to Kokoro.
+        if !UserDefaults.standard.bool(forKey: Keys.kokoroDefault) {
+            if savedVoice == "phonon/Harper" { savedVoice = SpeechEngine.defaultVoice }
+            UserDefaults.standard.set(savedVoice, forKey: Keys.voice)
+            UserDefaults.standard.set(true, forKey: Keys.kokoroDefault)
+        }
         let savedRate = UserDefaults.standard.double(forKey: Keys.rate)
         self.selectedVoice = savedVoice
         self.rate = savedRate > 0 ? savedRate : 1.0
@@ -103,8 +112,8 @@ final class AppModel: ObservableObject {
                     AppModel.shared.updateLoadProgress(fraction, message)
                 }
             }
-            // A classic voice chosen before, on a device without the classic
-            // voices (or a voice that no longer exists), becomes the default.
+            // An expressive voice chosen before, on a device without them
+            // (or a voice that no longer exists), becomes the default.
             if !voices.contains(where: { $0.id == selectedVoice }) {
                 selectedVoice = SpeechEngine.defaultVoice
             }
@@ -121,28 +130,28 @@ final class AppModel: ObservableObject {
         voiceState = .loading(progress: fraction, message: message)
     }
 
-    var hasClassicVoices: Bool {
-        voices.contains { $0.classic }
+    var hasExpressiveVoices: Bool {
+        voices.contains { $0.expressive }
     }
 
-    /// Downloads Kokoro's classic voices (about 350 MB) and adds them to the
-    /// voice picker.
-    func downloadClassicVoices() async {
-        guard voiceState == .ready, classicDownloadProgress == nil, !hasClassicVoices else { return }
-        classicDownloadProgress = 0
-        classicDownloadError = nil
+    /// Downloads Phonon's expressive voices (about 70 MB) and adds them to
+    /// the voice picker.
+    func downloadExpressiveVoices() async {
+        guard voiceState == .ready, expressiveDownloadProgress == nil, !hasExpressiveVoices else { return }
+        expressiveDownloadProgress = 0
+        expressiveDownloadError = nil
         do {
-            voices = try await engine.addClassicVoices { fraction, _ in
+            voices = try await engine.addExpressiveVoices { fraction, _ in
                 Task { @MainActor in
-                    if AppModel.shared.classicDownloadProgress != nil {
-                        AppModel.shared.classicDownloadProgress = fraction
+                    if AppModel.shared.expressiveDownloadProgress != nil {
+                        AppModel.shared.expressiveDownloadProgress = fraction
                     }
                 }
             }
         } catch {
-            classicDownloadError = error.localizedDescription
+            expressiveDownloadError = error.localizedDescription
         }
-        classicDownloadProgress = nil
+        expressiveDownloadProgress = nil
     }
 
     // MARK: - Books

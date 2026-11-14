@@ -1,8 +1,8 @@
 //! Every voice the app offers, from both engines, behind one interface.
 //!
-//! Phonon voices are the default: more expressive, faster and a smaller
-//! download. Kokoro's voices stay available as "classic" voices for anyone
-//! who prefers their steadier read; they are downloaded only when wanted.
+//! Kokoro's voices are the default: in listening tests they read fiction
+//! more naturally and more accurately. Phonon's voices are an optional
+//! "expressive" set, downloaded only when wanted.
 //! Voice ids say which engine they belong to: Phonon ids start with
 //! `phonon/`, and Kokoro ids are Kokoro's own names (`af_heart`), as saved by
 //! earlier versions of the app.
@@ -13,7 +13,7 @@ use crate::phonon::{self, Phonon};
 use crate::tts::{voice_display_name, Kokoro};
 
 pub const PHONON_PREFIX: &str = "phonon/";
-pub const DEFAULT_VOICE: &str = "phonon/Harper";
+pub const DEFAULT_VOICE: &str = "af_heart";
 
 /// A voice as the voice picker shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,12 +21,12 @@ pub struct VoiceChoice {
     pub id: String,
     /// "Harper (US, female)".
     pub label: String,
-    /// True for Kokoro's classic voices.
-    pub classic: bool,
+    /// True for Phonon's optional expressive voices.
+    pub expressive: bool,
 }
 
-pub fn is_classic_voice(id: &str) -> bool {
-    !id.starts_with(PHONON_PREFIX)
+pub fn is_expressive_voice(id: &str) -> bool {
+    id.starts_with(PHONON_PREFIX)
 }
 
 #[derive(Default)]
@@ -44,6 +44,10 @@ impl Narrator {
         self.kokoro = Some(kokoro);
     }
 
+    pub fn set_phonon(&mut self, phonon: Phonon) {
+        self.phonon = Some(phonon);
+    }
+
     pub fn has_kokoro(&self) -> bool {
         self.kokoro.is_some()
     }
@@ -52,9 +56,14 @@ impl Narrator {
         self.phonon.is_some()
     }
 
-    /// Phonon's voices first, best first, then Kokoro's classic voices.
+    /// Kokoro's voices first, then Phonon's expressive voices, best first.
     pub fn voices(&self) -> Vec<VoiceChoice> {
         let mut choices = Vec::new();
+        if let Some(kokoro) = &self.kokoro {
+            for name in kokoro.english_voices() {
+                choices.push(VoiceChoice { label: voice_display_name(&name), id: name, expressive: false });
+            }
+        }
         if let Some(phonon) = &self.phonon {
             for name in phonon.voices() {
                 let info = phonon::VOICES.iter().find(|voice| voice.name == name);
@@ -62,12 +71,7 @@ impl Narrator {
                     Some(info) => format!("{name} ({}, {})", info.accent, info.gender),
                     None => name.clone(),
                 };
-                choices.push(VoiceChoice { id: format!("{PHONON_PREFIX}{name}"), label, classic: false });
-            }
-        }
-        if let Some(kokoro) = &self.kokoro {
-            for name in kokoro.english_voices() {
-                choices.push(VoiceChoice { label: voice_display_name(&name), id: name, classic: true });
+                choices.push(VoiceChoice { id: format!("{PHONON_PREFIX}{name}"), label, expressive: true });
             }
         }
         choices
@@ -75,10 +79,10 @@ impl Narrator {
 
     /// The voice to use when the saved one is not available.
     pub fn fallback_voice(&self) -> String {
-        if self.phonon.is_some() {
+        if self.kokoro.is_some() {
             DEFAULT_VOICE.to_string()
         } else {
-            "af_heart".to_string()
+            format!("{PHONON_PREFIX}{}", phonon::VOICES[0].name)
         }
     }
 
@@ -109,7 +113,7 @@ impl Narrator {
     pub fn phonemize(&mut self, text: &str, british: bool) -> Result<String> {
         match &mut self.kokoro {
             Some(kokoro) => kokoro.phonemize(text, british),
-            None => Err(anyhow!("phonemes are only available for the classic voices")),
+            None => Err(anyhow!("phonemes are only available for the Kokoro voices")),
         }
     }
 }
