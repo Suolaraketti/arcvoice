@@ -26,3 +26,15 @@ serde_json = "1"
 sha2 = "0.10"
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Phonon, the expressive voice: Gradium's Rust runtime and its tensor library.
+ptts = { version = "=0.7.1", default-features = false, features = ["hf"] }
+xn = "0.2.14"
+
+# KleidiAI's Arm kernels make Phonon about twice as fast on Apple silicon and
+# Arm phones. They do not exist for x86.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ptts = { version = "=0.7.1", default-features = false, features = ["hf", "kai"] }
+
+# Apple's Accelerate framework for the matrix work on Macs and iPhones.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+ptts = { version = "=0.7.1", default-features = false, features = ["hf", "accelerate"] }

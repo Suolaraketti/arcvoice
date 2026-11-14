@@ -1,4 +1,10 @@
-//! Downloads the Kokoro voice the first time the app runs.
+//! Downloads the voices the first time they are needed.
+//!
+//! Phonon (the default voice, about 68 MB) comes from Gradium's Hugging Face
+//! repositories, pinned to exact revisions so an upstream change never alters
+//! the voice without a deliberate update. Kokoro (the classic voices, about
+//! 350 MB) comes from the kokoro-onnx release, only when a classic voice is
+//! chosen.
 //!
 //! The files come from the kokoro-onnx project's GitHub release. The full
 //! precision model is used on purpose: it is about 325 MB, but on a desktop
@@ -21,6 +27,97 @@ pub struct ModelFile {
 
 pub const MODEL: ModelFile = ModelFile { name: "kokoro-v1.0.onnx", approximate_bytes: 325_532_387 };
 pub const VOICES: ModelFile = ModelFile { name: "voices-v1.0.bin", approximate_bytes: 28_214_398 };
+
+const PHONON_MODEL_URL: &str =
+    "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f";
+const PHONON_VOICES_URL: &str =
+    "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices";
+const PHONON_FILES: [ModelFile; 3] = [
+    ModelFile { name: "config.json", approximate_bytes: 4_634 },
+    ModelFile { name: "tokenizer.json", approximate_bytes: 277_967 },
+    ModelFile { name: "model.q8.gguf", approximate_bytes: 64_512_352 },
+];
+const PHONON_VOICE_BYTES: u64 = 256_136;
+
+/// Where the Phonon checkpoint and its voices live.
+pub fn phonon_dir(models_dir: &Path) -> PathBuf {
+    models_dir.join("phonon")
+}
+
+/// A file to download: where it goes, relative to its voice's folder, where
+/// it comes from, and about how big it is.
+pub struct Download {
+    pub path: String,
+    pub url: String,
+    pub bytes: u64,
+}
+
+/// Everything Phonon needs, relative to `phonon_dir`. The apps on other
+/// platforms download from this same list, so they always match the engine.
+pub fn phonon_downloads() -> Vec<Download> {
+    let mut downloads: Vec<Download> = PHONON_FILES
+        .iter()
+        .map(|file| Download {
+            path: file.name.to_string(),
+            url: format!("{PHONON_MODEL_URL}/{}", file.name),
+            bytes: file.approximate_bytes,
+        })
+        .collect();
+    for voice in &crate::phonon::VOICES {
+        let name = format!("{}.safetensors", voice.id);
+        downloads.push(Download {
+            path: format!("voices/{name}"),
+            url: format!("{PHONON_VOICES_URL}/{name}"),
+            bytes: PHONON_VOICE_BYTES,
+        });
+    }
+    downloads
+}
+
+/// Kokoro's two files, relative to the models folder.
+pub fn kokoro_downloads() -> Vec<Download> {
+    [&VOICES, &MODEL]
+        .iter()
+        .map(|file| Download {
+            path: file.name.to_string(),
+            url: format!("{BASE_URL}/{}", file.name),
+            bytes: file.approximate_bytes,
+        })
+        .collect()
+}
+
+fn phonon_targets(models_dir: &Path) -> Vec<(String, PathBuf, u64)> {
+    let dir = phonon_dir(models_dir);
+    phonon_downloads().into_iter().map(|d| (d.url, dir.join(d.path), d.bytes)).collect()
+}
+
+fn is_complete(path: &Path, bytes: u64) -> bool {
+    fs::metadata(path).map(|meta| meta.len() >= bytes * 9 / 10).unwrap_or(false)
+}
+
+pub fn is_phonon_downloaded(models_dir: &Path) -> bool {
+    phonon_targets(models_dir).iter().all(|(_, path, bytes)| is_complete(path, *bytes))
+}
+
+/// Downloads whatever of Phonon is missing. `progress` gets 0 to 1.
+pub fn ensure_phonon_downloaded(models_dir: &Path, mut progress: impl FnMut(f32)) -> Result<()> {
+    let targets = phonon_targets(models_dir);
+    let total: u64 = targets.iter().map(|(_, _, bytes)| bytes).sum();
+    let mut done = 0;
+    for (url, path, bytes) in &targets {
+        if !is_complete(path, *bytes) {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let base = done;
+            download(url, path, |written| progress(((base + written) as f32 / total as f32).min(1.0)))
+                .with_context(|| format!("could not download {}", url.rsplit('/').next().unwrap_or(url)))?;
+        }
+        done += bytes;
+        progress((done as f32 / total as f32).min(1.0));
+    }
+    Ok(())
+}
 
 pub fn model_path(models_dir: &Path) -> PathBuf {
     models_dir.join(MODEL.name)

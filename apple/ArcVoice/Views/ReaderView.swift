@@ -174,11 +174,33 @@ struct ReaderView: View {
 
             if !model.voices.isEmpty {
                 Picker("Voice", selection: $model.selectedVoice) {
-                    ForEach(model.voices, id: \.self) { voice in
-                        Text(AppModel.displayName(forVoice: voice)).tag(voice)
+                    Section("Voices") {
+                        ForEach(model.voices.filter { !$0.classic }, id: \.id) { voice in
+                            Text(voice.label).tag(voice.id)
+                        }
+                    }
+                    if model.hasClassicVoices {
+                        Section("Classic voices") {
+                            ForEach(model.voices.filter(\.classic), id: \.id) { voice in
+                                Text(voice.label).tag(voice.id)
+                            }
+                        }
                     }
                 }
                 .pickerStyle(.menu)
+
+                if let progress = model.classicDownloadProgress {
+                    Text("Downloading classic voices, \(Int((progress * 100).rounded()))%")
+                } else if !model.hasClassicVoices {
+                    Button {
+                        Task { await model.downloadClassicVoices() }
+                    } label: {
+                        Label(
+                            model.classicDownloadError == nil
+                                ? "Get classic voices (350 MB)" : "Retry classic voices download",
+                            systemImage: "arrow.down.circle")
+                    }
+                }
             }
         } label: {
             Label("Voice and speed", systemImage: "slider.horizontal.3")

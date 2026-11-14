@@ -21,7 +21,11 @@ final class AppModel: ObservableObject {
     private let engine: SpeechEngine
 
     @Published private(set) var voiceState: VoiceState = .notLoaded
-    @Published private(set) var voices: [String] = []
+    @Published private(set) var voices: [SpeechEngine.Voice] = []
+    /// Progress of the optional classic (Kokoro) voices download, 0 to 1,
+    /// while it runs.
+    @Published private(set) var classicDownloadProgress: Double?
+    @Published var classicDownloadError: String?
     @Published private(set) var isImporting = false
     @Published var importError: String?
     /// The book whose reader screen is showing. Setting it navigates.
@@ -74,8 +78,8 @@ final class AppModel: ObservableObject {
 
     // MARK: - Voice
 
-    /// Downloads (first launch only) and loads the Kokoro model. Safe to call
-    /// from several places at once; they all wait on the same load.
+    /// Downloads (first launch only) and loads the voices. Safe to call from
+    /// several places at once; they all wait on the same load.
     func prepareVoice() async {
         if voiceState == .ready { return }
         if let loadTask {
@@ -94,13 +98,14 @@ final class AppModel: ObservableObject {
     private func runLoad() async {
         voiceState = .loading(progress: 0, message: "Getting the voice ready")
         do {
-            let names = try await engine.load { fraction, message in
+            voices = try await engine.load { fraction, message in
                 Task { @MainActor in
                     AppModel.shared.updateLoadProgress(fraction, message)
                 }
             }
-            voices = names.filter(Self.isEnglishVoice).sorted()
-            if !names.contains(selectedVoice) {
+            // A classic voice chosen before, on a device without the classic
+            // voices (or a voice that no longer exists), becomes the default.
+            if !voices.contains(where: { $0.id == selectedVoice }) {
                 selectedVoice = SpeechEngine.defaultVoice
             }
             voiceState = .ready
@@ -116,23 +121,28 @@ final class AppModel: ObservableObject {
         voiceState = .loading(progress: fraction, message: message)
     }
 
-    /// Kokoro voice names start with a language letter and a gender letter:
-    /// `af_` American female, `am_` American male, `bf_` and `bm_` British.
-    static func isEnglishVoice(_ name: String) -> Bool {
-        name.hasPrefix("af_") || name.hasPrefix("am_") || name.hasPrefix("bf_") || name.hasPrefix("bm_")
+    var hasClassicVoices: Bool {
+        voices.contains { $0.classic }
     }
 
-    static func displayName(forVoice name: String) -> String {
-        let parts = name.split(separator: "_", maxSplits: 1)
-        guard parts.count == 2, parts[0].count == 2 else { return name }
-        let accent: String
-        switch parts[0].first {
-        case "a": accent = "US"
-        case "b": accent = "UK"
-        default: accent = String(parts[0])
+    /// Downloads Kokoro's classic voices (about 350 MB) and adds them to the
+    /// voice picker.
+    func downloadClassicVoices() async {
+        guard voiceState == .ready, classicDownloadProgress == nil, !hasClassicVoices else { return }
+        classicDownloadProgress = 0
+        classicDownloadError = nil
+        do {
+            voices = try await engine.addClassicVoices { fraction, _ in
+                Task { @MainActor in
+                    if AppModel.shared.classicDownloadProgress != nil {
+                        AppModel.shared.classicDownloadProgress = fraction
+                    }
+                }
+            }
+        } catch {
+            classicDownloadError = error.localizedDescription
         }
-        let gender = parts[0].last == "f" ? "female" : "male"
-        return "\(parts[1].capitalized) (\(accent), \(gender))"
+        classicDownloadProgress = nil
     }
 
     // MARK: - Books

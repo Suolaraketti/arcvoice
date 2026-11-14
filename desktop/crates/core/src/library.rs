@@ -87,7 +87,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { voice: "af_heart".to_string(), speed: 1.0, sync_folder: None }
+        Self { voice: crate::narrator::DEFAULT_VOICE.to_string(), speed: 1.0, sync_folder: None }
     }
 }
 

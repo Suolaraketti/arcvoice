@@ -15,48 +15,57 @@ enum SpeechEngineError: LocalizedError {
     }
 }
 
-/// The voice: the same Rust engine the Windows app uses, running on this
+/// The voices: the same Rust engine the Windows app uses, running on this
 /// device. It prepares each sentence for speech (times, numbers, names),
-/// works out pronunciations, renders it with the Kokoro model and adds the
-/// pause that should follow it. One engine everywhere means a pronunciation
-/// fix reaches every platform at once.
+/// renders it, and adds the pause that should follow it. One engine
+/// everywhere means a fix reaches every platform at once.
+///
+/// Two families of voices live in it. Phonon's are the default: expressive,
+/// very fast, and a small download (about 68 MB). Kokoro's "classic" voices
+/// are steadier and a large download (about 350 MB), fetched only when asked
+/// for. Devices that already have Kokoro from an earlier version keep it.
 ///
 /// An actor because the engine is not thread safe and each render blocks for
 /// a moment; this keeps every call in a single queue, off the main thread.
 actor SpeechEngine {
 
-    /// Kokoro always produces 24 kHz mono audio.
+    /// The engine always produces 24 kHz mono audio.
     static let sampleRate: Double = 24_000
-    static let defaultVoice = "af_heart"
+    static let defaultVoice = "phonon/Harper"
 
-    /// The kokoro-onnx project's release of the Kokoro v1.0 model and voices,
-    /// the files the Windows app uses too. The full precision model is used
-    /// on purpose: it is the voice exactly as trained and as Windows plays it,
-    /// and it still renders about three times faster than it speaks on two
-    /// iPhone cores. (The 8-bit version is twice as fast and scored the same
-    /// on quality checks, if battery ever matters more.)
-    private static let release = URL(
-        string: "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0")!
-    private static let files: [(name: String, bytes: Int64)] = [
-        ("voices-v1.0.bin", 28_214_398),
-        ("kokoro-v1.0.onnx", 325_532_387),
-    ]
+    struct Voice: Hashable, Sendable {
+        let id: String
+        /// "Harper (US, female)".
+        let label: String
+        /// One of Kokoro's classic voices.
+        let classic: Bool
+    }
 
     private var engine: OpaquePointer?
-    private var voices: [String] = []
+    private var voices: [Voice] = []
 
     deinit {
         if let engine { arcvoice_engine_close(engine) }
     }
 
-    /// The model sits in Application Support, not Caches, so iOS never deletes
-    /// it to free space and forces a download in the middle of a book.
-    private static func modelDirectory() throws -> URL {
+    /// Two performance cores on an iPhone; more threads only add heat. Phonon
+    /// renders well over ten times faster than it speaks on two.
+    private static var threads: UInt32 {
+        #if os(iOS)
+        return 2
+        #else
+        return UInt32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2)))
+        #endif
+    }
+
+    /// The voice files sit in Application Support, not Caches, so iOS never
+    /// deletes them to free space and forces a download in the middle of a book.
+    private static func directory(_ name: String) throws -> URL {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        var directory = support.appendingPathComponent("KokoroONNX", isDirectory: true)
+        var directory = support.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        // It can always be downloaded again, so keep it out of iCloud backups.
+        // They can always be downloaded again, so keep them out of iCloud backups.
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try? directory.setResourceValues(values)
@@ -65,32 +74,71 @@ actor SpeechEngine {
         return directory
     }
 
-    /// Loads the voice, downloading it the first time. Returns the voice names.
-    func load(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [String] {
+    private static func phononDirectory() throws -> URL { try directory("Phonon") }
+    private static func kokoroDirectory() throws -> URL { try directory("KokoroONNX") }
+
+    /// Loads the voices, downloading Phonon the first time. Returns them,
+    /// best first.
+    func load(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [Voice] {
         if engine != nil { return voices }
 
-        let directory = try Self.modelDirectory()
-        try await Self.downloadMissing(into: directory, progress: progress)
+        let phonon = try Self.phononDirectory()
+        try await Self.download(Self.files(arcvoice_phonon_downloads()), into: phonon, progress: progress)
         progress(1, "Loading the voice")
 
-        let model = directory.appendingPathComponent(Self.files[1].name).path
-        let voicesFile = directory.appendingPathComponent(Self.files[0].name).path
-        // An iPhone has two performance cores; more threads only add heat.
-        #if os(iOS)
-        let threads: UInt32 = 2
-        #else
-        let threads = UInt32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2)))
-        #endif
+        let kokoro = try Self.kokoroDirectory()
+        let kokoroReady = Self.isDownloaded(Self.files(arcvoice_kokoro_downloads()), in: kokoro)
         var error: UnsafeMutablePointer<CChar>?
-        guard let opened = arcvoice_engine_open(model, voicesFile, threads, &error) else {
+        let opened: OpaquePointer?
+        if kokoroReady {
+            opened = arcvoice_engine_open(
+                phonon.path, kokoro.appendingPathComponent("kokoro-v1.0.onnx").path,
+                kokoro.appendingPathComponent("voices-v1.0.bin").path, Self.threads, &error)
+        } else {
+            opened = arcvoice_engine_open(phonon.path, nil, nil, Self.threads, &error)
+        }
+        guard let opened else {
             throw SpeechEngineError.engine(Self.take(error) ?? "The voice could not be loaded.")
         }
         engine = opened
-        voices = (Self.take(arcvoice_engine_voices(opened)) ?? "")
-            .split(separator: "\n").map(String.init)
+        voices = readVoices()
         // The first render is slower than the rest. Take that hit now.
         _ = try? synthesize("Ready.", voice: Self.defaultVoice, speed: 1, after: .sentence)
         return voices
+    }
+
+    /// True once Kokoro's classic voices are on this device.
+    func hasClassicVoices() -> Bool {
+        voices.contains { $0.classic }
+    }
+
+    /// Downloads Kokoro's classic voices (about 350 MB) and adds them.
+    func addClassicVoices(progress: @escaping @Sendable (Double, String) -> Void) async throws -> [Voice] {
+        guard let engine else { throw SpeechEngineError.notLoaded }
+        if hasClassicVoices() { return voices }
+        let kokoro = try Self.kokoroDirectory()
+        try await Self.download(Self.files(arcvoice_kokoro_downloads()), into: kokoro, progress: progress)
+        progress(1, "Loading the classic voices")
+        var error: UnsafeMutablePointer<CChar>?
+        guard arcvoice_engine_add_kokoro(
+            engine, kokoro.appendingPathComponent("kokoro-v1.0.onnx").path,
+            kokoro.appendingPathComponent("voices-v1.0.bin").path, Self.threads, &error)
+        else {
+            throw SpeechEngineError.engine(Self.take(error) ?? "The classic voices could not be loaded.")
+        }
+        voices = readVoices()
+        return voices
+    }
+
+    private func readVoices() -> [Voice] {
+        guard let engine else { return [] }
+        return (Self.take(arcvoice_engine_voices(engine)) ?? "")
+            .split(separator: "\n")
+            .compactMap { line in
+                let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+                guard fields.count == 3 else { return nil }
+                return Voice(id: String(fields[0]), label: String(fields[1]), classic: fields[2] == "1")
+            }
     }
 
     /// What follows a rendered piece, which sets the pause after it.
@@ -110,10 +158,10 @@ actor SpeechEngine {
     }
 
     /// Renders text at 24 kHz, ready to play: the speech, then the pause that
-    /// belongs after it.
+    /// belongs after it. An unknown voice falls back to the default.
     func synthesize(_ text: String, voice: String, speed: Float, after: After) throws -> [Float] {
         guard let engine else { throw SpeechEngineError.notLoaded }
-        let chosen = voices.contains(voice) ? voice : Self.defaultVoice
+        let chosen = voices.contains { $0.id == voice } ? voice : Self.defaultVoice
         var samples: UnsafeMutablePointer<Float>?
         var count = 0
         var error: UnsafeMutablePointer<CChar>?
@@ -126,8 +174,8 @@ actor SpeechEngine {
         return Array(UnsafeBufferPointer(start: samples, count: count))
     }
 
-    /// The phonemes a sentence is spoken with, for looking into a word the
-    /// voice says oddly.
+    /// The phonemes a sentence is spoken with by the classic voices, for
+    /// looking into a word they say oddly.
     func phonemes(for text: String) -> String? {
         guard let engine else { return nil }
         return Self.take(arcvoice_engine_phonemize(engine, text, false))
@@ -142,24 +190,48 @@ actor SpeechEngine {
 
     // MARK: - Download
 
+    /// A file the engine needs: path inside its folder, source, approximate size.
+    private struct RemoteFile {
+        let path: String
+        let url: URL
+        let bytes: Int64
+    }
+
+    /// The engine's own list of files, so this app always downloads exactly
+    /// what the engine expects.
+    private static func files(_ list: UnsafeMutablePointer<CChar>?) -> [RemoteFile] {
+        (take(list) ?? "").split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\t")
+            guard fields.count == 3, let url = URL(string: String(fields[1])), let bytes = Int64(fields[2])
+            else { return nil }
+            return RemoteFile(path: String(fields[0]), url: url, bytes: bytes)
+        }
+    }
+
     private static func isComplete(_ url: URL, expected: Int64) -> Bool {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         return Int64(size) >= expected * 9 / 10
     }
 
-    private static func downloadMissing(
-        into directory: URL, progress: @escaping @Sendable (Double, String) -> Void
+    private static func isDownloaded(_ files: [RemoteFile], in directory: URL) -> Bool {
+        !files.isEmpty && files.allSatisfy { isComplete(directory.appendingPathComponent($0.path), expected: $0.bytes) }
+    }
+
+    private static func download(
+        _ files: [RemoteFile], into directory: URL, progress: @escaping @Sendable (Double, String) -> Void
     ) async throws {
-        let total = files.reduce(0) { $0 + $1.bytes }
+        let total = max(1, files.reduce(0) { $0 + $1.bytes })
         var done: Int64 = 0
         for file in files {
-            let target = directory.appendingPathComponent(file.name)
+            let target = directory.appendingPathComponent(file.path)
             if !isComplete(target, expected: file.bytes) {
+                try FileManager.default.createDirectory(
+                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let before = done
                 let downloader = FileDownloader(destination: target) { written in
                     progress(Double(before + written) / Double(total), "Downloading the voice")
                 }
-                try await downloader.download(release.appendingPathComponent(file.name))
+                try await downloader.download(file.url)
                 guard isComplete(target, expected: file.bytes) else {
                     try? FileManager.default.removeItem(at: target)
                     throw SpeechEngineError.download("The file was incomplete. Check the connection and try again.")

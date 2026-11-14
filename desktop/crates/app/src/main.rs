@@ -7,7 +7,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use arcvoice::engine::{Command, Engine, Snapshot, VoiceStatus};
-use arcvoice_core::tts::voice_display_name;
 use arcvoice_core::{Book, Library, PreparedImport};
 use eframe::egui;
 use std::path::PathBuf;
@@ -317,18 +316,39 @@ impl App {
                     });
 
                 if !snapshot.voices.is_empty() {
-                    egui::ComboBox::from_id_salt("voice")
-                        .selected_text(voice_display_name(&self.voice))
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for voice in &snapshot.voices {
-                                let label = voice_display_name(voice);
-                                if ui.selectable_value(&mut self.voice, voice.clone(), label).clicked() {
-                                    self.engine.send(Command::SetVoice(voice.clone()));
-                                    self.save_settings();
+                    let selected = snapshot
+                        .voices
+                        .iter()
+                        .find(|voice| voice.id == self.voice)
+                        .map_or_else(|| "Choose a voice".to_string(), |voice| voice.label.clone());
+                    let mut chosen: Option<String> = None;
+                    egui::ComboBox::from_id_salt("voice").selected_text(selected).width(210.0).show_ui(ui, |ui| {
+                        for voice in snapshot.voices.iter().filter(|voice| !voice.classic) {
+                            if ui.selectable_label(self.voice == voice.id, &voice.label).clicked() {
+                                chosen = Some(voice.id.clone());
+                            }
+                        }
+                        ui.separator();
+                        let classics: Vec<_> = snapshot.voices.iter().filter(|voice| voice.classic).collect();
+                        if classics.is_empty() {
+                            // Picking a classic voice downloads Kokoro (about 350 MB).
+                            if ui.selectable_label(false, "Classic voices (download 350 MB)").clicked() {
+                                chosen = Some("af_heart".to_string());
+                            }
+                        } else {
+                            ui.small("Classic voices");
+                            for voice in classics {
+                                if ui.selectable_label(self.voice == voice.id, &voice.label).clicked() {
+                                    chosen = Some(voice.id.clone());
                                 }
                             }
-                        });
+                        }
+                    });
+                    if let Some(voice) = chosen {
+                        self.voice = voice.clone();
+                        self.engine.send(Command::SetVoice(voice));
+                        self.save_settings();
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -372,7 +392,7 @@ impl App {
         match &snapshot.voice_status {
             VoiceStatus::Downloading(fraction) => {
                 ui.horizontal(|ui| {
-                    ui.small("Downloading the voice, one time only (about 350 MB)");
+                    ui.small("Downloading the voice, one time only");
                     ui.add(egui::ProgressBar::new(*fraction).desired_width(200.0).show_percentage());
                 });
             }

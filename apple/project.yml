@@ -50,7 +50,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: false
         # The voice engine (apple/build-core.sh) and what it links against.
-        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security"
+        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security -framework Accelerate"
         # ONNX Runtime's simulator build is for Apple Silicon Macs only.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
     dependencies:
@@ -102,7 +102,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: false
         ENABLE_HARDENED_RUNTIME: true
-        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security"
+        OTHER_LDFLAGS: "-lc++ -liconv -framework CoreML -framework Security -framework Accelerate"
         # ONNX Runtime ships for Apple Silicon Macs only.
         ARCHS: arm64
     dependencies:

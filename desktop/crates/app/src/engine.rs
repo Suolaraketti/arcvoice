@@ -12,7 +12,8 @@
 //! The window sends `Command`s in and reads a `Snapshot` out.
 
 use arcvoice_core::pacing::{self, Break};
-use arcvoice_core::{models, Book, Kokoro, Library, SAMPLE_RATE};
+use arcvoice_core::narrator::is_classic_voice;
+use arcvoice_core::{models, Book, Kokoro, Library, Narrator, Phonon, VoiceChoice, SAMPLE_RATE};
 use rodio::buffer::SamplesBuffer;
 use rodio::{OutputStream, OutputStreamBuilder, Sink};
 use std::collections::{HashSet, VecDeque};
@@ -38,7 +39,7 @@ pub enum VoiceStatus {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub voice_status: VoiceStatus,
-    pub voices: Vec<String>,
+    pub voices: Vec<VoiceChoice>,
     pub book: Option<Book>,
     pub sentences: Arc<Vec<String>>,
     pub current_index: usize,
@@ -61,7 +62,7 @@ pub enum Command {
 
 enum Message {
     Command(Command),
-    VoiceStatus(VoiceStatus, Vec<String>),
+    VoiceStatus(VoiceStatus, Vec<VoiceChoice>),
     Rendered { generation: u64, index: usize, result: Result<Vec<f32>, String> },
 }
 
@@ -142,44 +143,72 @@ fn voice_thread(
     messages: Sender<Message>,
     generation: Arc<AtomicU64>,
 ) {
-    let report = |status: VoiceStatus, voices: Vec<String>| {
+    let report = |status: VoiceStatus, voices: Vec<VoiceChoice>| {
         let _ = messages.send(Message::VoiceStatus(status, voices));
     };
-
-    if !models::is_downloaded(&models_dir) {
-        report(VoiceStatus::Downloading(0.0), Vec::new());
+    // Reporting every downloaded chunk would flood the channel.
+    let download_progress = || {
         let mut last_reported = -1.0f32;
-        let downloaded = models::ensure_downloaded(&models_dir, |fraction| {
-            // Reporting every chunk would flood the channel.
+        move |fraction: f32| {
             if fraction - last_reported >= 0.005 {
                 last_reported = fraction;
                 report(VoiceStatus::Downloading(fraction), Vec::new());
             }
-        });
-        if let Err(error) = downloaded {
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(1, 4));
+
+    // Phonon first: the default voice, and a small download.
+    if !models::is_phonon_downloaded(&models_dir) {
+        report(VoiceStatus::Downloading(0.0), Vec::new());
+        if let Err(error) = models::ensure_phonon_downloaded(&models_dir, download_progress()) {
             report(VoiceStatus::Failed(format!("The voice could not be downloaded: {error:#}")), Vec::new());
             return;
         }
     }
-
     report(VoiceStatus::Loading, Vec::new());
-    let mut kokoro = match Kokoro::load(&models::model_path(&models_dir), &models::voices_path(&models_dir)) {
-        Ok(kokoro) => kokoro,
+    let phonon = match Phonon::load(&models::phonon_dir(&models_dir), Some(threads)) {
+        Ok(phonon) => Some(phonon),
         Err(error) => {
             report(VoiceStatus::Failed(format!("The voice could not be loaded: {error:#}")), Vec::new());
             return;
         }
     };
+    // Kokoro's classic voices too, when an earlier version downloaded them.
+    let load_kokoro = || {
+        let options = arcvoice_core::LoadOptions { threads: Some(threads), ..Default::default() };
+        Kokoro::load_with(&models::model_path(&models_dir), &models::voices_path(&models_dir), &options)
+    };
+    let kokoro = if models::is_downloaded(&models_dir) { load_kokoro().ok() } else { None };
+    let mut narrator = Narrator::new(phonon, kokoro);
     // The first render is slower than the rest. Take that hit now.
-    let _ = kokoro.synthesize("Ready.", "af_heart", 1.0);
-    report(VoiceStatus::Ready, kokoro.english_voices());
+    let _ = narrator.synthesize("Ready.", arcvoice_core::narrator::DEFAULT_VOICE, 1.0);
+    report(VoiceStatus::Ready, narrator.voices());
 
     while let Ok(request) = requests.recv() {
         // A seek since this was asked for makes it stale. Skip the work.
         if request.generation != generation.load(Ordering::SeqCst) {
             continue;
         }
-        let result = kokoro
+        // A classic voice was chosen and Kokoro is not here yet: fetch it.
+        if is_classic_voice(&request.voice) && !narrator.has_kokoro() {
+            report(VoiceStatus::Downloading(0.0), narrator.voices());
+            let loaded = models::ensure_downloaded(&models_dir, download_progress())
+                .and_then(|()| {
+                    report(VoiceStatus::Loading, narrator.voices());
+                    load_kokoro()
+                });
+            match loaded {
+                Ok(kokoro) => narrator.set_kokoro(kokoro),
+                Err(error) => {
+                    let message = format!("The classic voices could not be downloaded: {error:#}");
+                    report(VoiceStatus::Failed(message), narrator.voices());
+                    continue;
+                }
+            }
+            report(VoiceStatus::Ready, narrator.voices());
+        }
+        let result = narrator
             .synthesize(&request.text, &request.voice, request.speed)
             .map_err(|error| format!("{error:#}"));
         let _ = messages.send(Message::Rendered { generation: request.generation, index: request.index, result });
@@ -271,7 +300,7 @@ impl Controller {
 
     fn run(mut self, messages: Receiver<Message>) {
         let mut voice_status = VoiceStatus::Loading;
-        let mut voices: Vec<String> = Vec::new();
+        let mut voices: Vec<VoiceChoice> = Vec::new();
         loop {
             // Wake often while playing to notice sentences finishing; rarely
             // when idle so a paused app uses no CPU.
