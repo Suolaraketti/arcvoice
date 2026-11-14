@@ -30,7 +30,7 @@ devices, about 350 MB on Windows). After that the app needs no network.
 
 ## Build the iPhone and Mac apps
 
-You need a Mac with Xcode 16 or newer. The apps need iOS 18 or macOS 15.
+You need a Mac with Xcode 26 or newer (the speech package uses the iOS 26 SDK). The apps themselves run on iOS 18 and macOS 15 or newer.
 
 ```sh
 brew install xcodegen
