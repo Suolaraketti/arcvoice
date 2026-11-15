@@ -1,0 +1,3 @@
+.cache/
+private/*
+!private/README.md

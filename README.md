@@ -1,7 +1,7 @@
 # ArcVoice
 
-Reads PDFs and EPUBs out loud with expressive narrator voices, running
-entirely on your own device. No account, no cloud, no per-character fees. Built for listening to
+Reads books out loud (EPUB, PDF, Word, Kindle and more) with natural
+narrator voices, running entirely on your own device. No account, no cloud, no per-character fees. Built for listening to
 advance reader copies, which is why it works so hard at skipping the page
 headers, page numbers and watermark lines that ARCs are full of.
 
@@ -20,9 +20,20 @@ reaches every device at once.
 
 ## What it does
 
-- Add a PDF or EPUB and it is ready to read in a few seconds. EPUB is the
-  usual download from BookFunnel and most ARC services; open one from Files,
-  Mail or a browser with "Open in ArcVoice", or drop it on the window.
+- Add a book and it is ready to read in a few seconds. EPUB is the usual
+  download from BookFunnel and most ARC services; open one from Files, Mail
+  or a browser with "Open in ArcVoice", or drop it on the window. A file
+  still in iCloud Drive is downloaded first.
+- iPhone and Mac read EPUB, PDF (scanned PDFs too, through on-device text
+  recognition), Word (.docx), OpenDocument (.odt), DRM-free Kindle (.mobi,
+  .azw3), FictionBook (.fb2), web pages, RTF, Markdown, plain text and photos
+  of pages. What a file is comes from its contents, not its name. Files that
+  can't be read (an Adobe .acsm ticket, a DRM-locked Kindle book) say what to
+  do instead. Windows reads EPUB and PDF.
+- Chapters: the reader shows the chapter being read, and a chapter list
+  jumps to any chapter (iPhone and Mac). See "How chapters are found".
+- A chapter's decorative first letter, which PDFs often draw as a picture or
+  file out of order, is put back ("I throw", not "throw").
 - Strips running headers, page numbers, watermark lines and table of contents
   rows before anything is read aloud.
 - Starts speaking as soon as the first sentence is rendered and keeps a few
@@ -116,7 +127,6 @@ do not read that folder yet; that is the next piece of work.
 
 ## Known limits
 
-- Scanned PDFs with no text layer are not supported (that needs OCR).
 - DRM protected files cannot be opened. Many NetGalley and Edelweiss titles
   are protected or only download through their own apps, and some BookFunnel
   titles can only be read in BookFunnel's own app or cloud reader. ArcVoice
@@ -137,9 +147,51 @@ do not read that folder yet; that is the next piece of work.
   usually what a reader would say, but an unusual name can come out wrong.
 - British voices use American pronunciations for words outside the main
   dictionary (mostly names).
+- The Windows app is behind the iPhone and Mac apps on reading books in: it
+  reads EPUB and PDF only, has no chapter list, and does not yet use type
+  sizes, numbered chapter headings or decorative first letters. The cleanup
+  rules below were kept in step until November 2026; the Apple versions now
+  go further.
 - PDF text extraction on Windows uses a pure Rust library. It handles
   ordinary book layouts well but is less forgiving than Apple's PDFKit with
   unusual files.
+
+## How chapters are found
+
+On iPhone and Mac (`apple/ArcVoice/Models/Chapter.swift`, and the readers in
+`Services/`), from the most trustworthy source a book has:
+
+1. **An EPUB's own table of contents** (the EPUB 3 navigation document or the
+   EPUB 2 `toc.ncx`). Each entry is mapped to the exact sentence it links to,
+   including anchors inside a file that holds several chapters.
+2. **A PDF's bookmarks**, which publishing tools write from the real chapter
+   list.
+3. **Type size.** A PDF without bookmarks still records the size and weight
+   of every character, and chapter titles are set larger (or bold). Lines
+   clearly larger than the body text are the headings.
+4. **Wording**, for files with none of that: "Chapter 6", "PART TWO", a
+   number heading a page that is not the page number, short title lines at
+   the top of a page after a page that stopped short.
+
+Headings that follow each other make one chapter ("Part II · The Capture ·
+Welcome to hell · Ryker"). Printed contents pages are left out of both the
+chapter list and the reading.
+
+### Checking it
+
+`tools/book-checks/run.sh` checks all of this against a shelf of real
+public-domain books, compiled from the app's own code. It downloads them once
+(about 30 MB, not committed), typesets test PDFs like ARCs in seven
+chapter-heading styles, and reports:
+
+- EPUBs (25 books, three packagings): every chapter must start on its title.
+- PDFs (14 typeset books): at least 97% of chapters found, at most one false
+  alarm per 50 chapters. Currently 99%.
+- Every format: one file of each must import, and bad files must be refused.
+
+Run it after changing anything in the readers. Books of your own (ARCs) go in
+`tools/book-checks/private/`, which is never committed;
+`run.sh mine` prints their chapter lists to check by eye.
 
 ## How the voice reads
 
